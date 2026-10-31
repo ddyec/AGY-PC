@@ -2,11 +2,24 @@
 
 这一版替换 1.0 的 WPF 界面，使用真正的 Microsoft WinUI 3 / Windows App SDK 2.6.4。原生导航、输入框、密码框、按钮、InfoBar、文件选择器和对话框共享系统主题资源，支持跟随 Windows、浅色和深色。旧版明暗混用、文字不可见的界面不再作为当前实现。
 
-**当前为 `2.0.0-beta.1`。Release 提供源码和 Windows 本机构建入口，不把 Linux 上产生的中间程序集标成 WinUI 运行包。** 本机构建入口本身是 Windows 控制台工具，不是新版 WinUI 客户端；它负责在 Windows 上生成真正的 WinUI 运行包。
+**当前为 `2.0.0-beta.2`。Release 提供源码和 Windows 本机构建入口，不把 Linux 上产生的中间程序集标成 WinUI 运行包。** 本机构建入口本身是 Windows 控制台工具，不是新版 WinUI 客户端；它负责在 Windows 上生成真正的 WinUI 运行包。
+
+
+## 已遇到 PRI175 / PRI277 的现有构建
+
+下载 `AGY-PC-PRI175-Repair.zip`，解压后双击 `Repair-PRI175.cmd`。脚本会修复当前用户最新一次 AGY-PC Windows 构建目录，备份项目文件，清除重复的 Assets 资源声明，仅清理该 WinUI 项目的 bin/obj，再复用现有 SDK 和 NuGet 缓存继续发布。SDK 不必重新下载。
+
+也可以在修复包目录的 PowerShell 中指定原失败目录：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\repair-pri175.ps1 -BuildDirectory "$env:LOCALAPPDATA\AGY-PC\WindowsBuilds\20261031-181823-989ffa"
+```
+
+2.0.0-beta.2 已从源码修复：保留官方图标、Logo 和 EXE 嵌入图标；先清除 SDK 默认通配项再显式收录，每份图片只进入 PRI 一次。没有禁用资源索引。
 
 ## Windows 上使用新版
 
-从 Release 下载 `AGY-PC-2.0.0-beta.1-Windows-Builder.zip`，解压到普通可写目录，运行 `AGY-PC-Windows-Builder.exe`。
+从 Release 下载 `AGY-PC-2.0.0-beta.2-Windows-Builder.zip`，解压到普通可写目录，运行 `AGY-PC-Windows-Builder.exe`。
 
 它会：
 

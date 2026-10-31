@@ -14,7 +14,7 @@
     <Platforms>x64;ARM64</Platforms>
     <AssemblyName>AGY-PC</AssemblyName>
     <RootNamespace>AGY.PC.WinUI</RootNamespace>
-    <Version>2.0.0-beta.1</Version>
+    <Version>2.0.0-beta.2</Version>
     <ApplicationIcon>Assets/AGY.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PublishTrimmed>false</PublishTrimmed>
@@ -23,7 +23,21 @@
   <ItemGroup>
     <ProjectReference Include="../AGY.PC.Core/AGY.PC.Core.csproj"/>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4"/>
-    <Content Include="Assets/Mark.png" CopyToOutputDirectory="PreserveNewest"/>
-    <Content Include="Assets/AGY.ico" CopyToOutputDirectory="PreserveNewest"/>
+    <!-- WinUI.props and the .NET SDK both glob Assets. Own this list once,
+         while retaining native EXE icon embedding through ApplicationIcon. -->
+    <Content Remove="Assets/**"/>
+    <None Remove="Assets/**"/>
+    <Content Include="Assets/Mark.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="Assets/AGY.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
   </ItemGroup>
+  <Target Name="ValidateWinUIAssetUniqueness" BeforeTargets="CoreCompile;BeforeGenerateProjectPriFile">
+    <ItemGroup>
+      <_AGYAsset Include="@(Content)" Condition="$([System.String]::Copy('%(Content.Identity)').Replace('\', '/').StartsWith('Assets/'))"/>
+    </ItemGroup>
+    <RemoveDuplicates Inputs="@(_AGYAsset-&gt;'%(FullPath)')">
+      <Output TaskParameter="Filtered" ItemName="_AGYUniqueAsset"/>
+    </RemoveDuplicates>
+    <Error Condition="'@(_AGYAsset-&gt;Count())' != '@(_AGYUniqueAsset-&gt;Count())'"
+           Text="AGY Assets contain duplicate Content items. Check SDK default globs before PRI generation."/>
+  </Target>
 </Project>

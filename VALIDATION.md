@@ -1,3 +1,14 @@
+# 2.0.0-beta.2 · PRI175 修复
+
+- 根据真实 Windows 日志，完整构建已通过 C# 编译，失败点为 WinUI PRI 资源索引的重复 `Files/Assets/AGY.ico`。
+- 在 SDK 10.0.403 / Windows App SDK 2.6.4 的实际 MSBuild 资源图复现：ICO 为 2 项，PNG 为 3 项。根因是 WinUI / .NET 的默认资源通配符与显式 Content Include 叠加。
+- 修复先移除 Assets 的默认 Content/None 项，再统一显式收录，保留 EXE 图标嵌入及输出/发布复制。x64、ARM64 的发布配置均验证为每个资源恰好 1 项。
+- 在 C# 编译 / PRI 前增加重复项检查；通过注入重复图标验证构建会主动失败。未关闭 PRI 生成，也未移除官方图标或 Logo。
+- 托管 WinUI 编译及资源图检查在 Linux 上执行；真实 Windows MakePRI 和启动仍需用户设备重跑，不能宣称此次已在 Windows 全量通过。
+- 附带修复现有失败目录的 PowerShell 脚本：备份项目、去除重复、仅清理该 WinUI 项目的 bin/obj，复用 SDK 与 NuGet 缓存重新发布，并运行原有截图检查。该脚本未在这台 Linux 上执行。
+
+---
+
 # 2.0.0-beta.1 验证
 
 ## 本次实际完成

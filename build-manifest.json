@@ -1,12 +1,12 @@
 {
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0-beta.2",
   "uiFramework": "WinUI 3",
   "windowsAppSDK": "2.6.4",
   "dotnetSDK": "10.0.403",
   "coreTestsPassed": 22,
   "gatewayTestsPassed": 23,
   "winuiManagedCompile": "passed",
-  "fullWindowsWinUIPublish": "requires Windows node; not performed here",
+  "fullWindowsWinUIPublish": "requires rerun on Windows after resource fix; not verified on Linux",
   "windowsUiScreenshots": "not generated on this Linux server",
   "builderCrossCompiled": "win-x64",
   "releaseAssetKind": "Windows build entry, not a prebuilt WinUI client",
@@ -14,6 +14,22 @@
   "actionsRun": false,
   "realModelTasksSent": 0,
   "productionGateway": "idle restart; project snapshot enabled; same account/key/tunnel",
-  "createdUTC": "2026-10-31T10:04:24.915599+00:00",
-  "builderExeSHA256": "9aa63535b5d4a6956218f52d7c7f83c682b27fb8d669f9a6284a4297e5712c2b"
+  "createdUTC": "2026-10-31T10:26:50.702618+00:00",
+  "builderExeSHA256": "ee97e073c931c0afb131e3b51cab9351b97cef9e0b6a591361bb71504cd22ac6",
+  "lastFix": "PRI175/PRI277 duplicate Assets resource declarations",
+  "resourceGraph": {
+    "before": {
+      "Assets/AGY.ico": 2,
+      "Assets/Mark.png": 3
+    },
+    "after": {
+      "Assets/AGY.ico": 1,
+      "Assets/Mark.png": 1
+    },
+    "configurations": [
+      "win-x64",
+      "win-arm64"
+    ],
+    "duplicateGuardInjection": "rejected"
+  }
 }
