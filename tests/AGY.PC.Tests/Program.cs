@@ -224,6 +224,24 @@ static class Program {
             await work.SteerNowAsync();
             Assert(fake.Stops==1&&fake.Submissions==1&&work.Pending is null&&work.Draft.Text=="","stopped and steered in one step");
         });
+        await Test("Free specification of custom model ID, workspace path, custom DoH URL and custom skills persist across restarts",async()=>{
+            var store=new MemoryStore();var fake=new Fake();
+            using(var work=new Workspace(store,_=>new(Creds,fake))){
+                work.SetNetwork(new(true,"Custom",true,"https://dns.alidns.com/dns-query"));
+                await work.ConnectAsync(Creds);
+                await work.ConfigureAsync(new("claude-sonnet-4-5-custom","xhigh","turbo","accept-edits","subproject/app"));
+                Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.Workspace=="/work/subproject/app","custom model and relative workspace normalized");
+                work.SaveCustomSkill("/review-ui","UI 审查技能","请审查当前 UI 设计：",".agents/skills/ui/SKILL.md");
+                Assert(work.CustomSkills.Count==1,"custom skill saved");
+                work.ApplySkill(work.CustomSkills[0]);
+                Assert(work.Draft.Text.Contains("请审查当前 UI 设计：")&&work.Draft.References.Any(r=>r.Path=="/work/subproject/app/.agents/skills/ui/SKILL.md"),"skill applied with reference");
+            }
+            using(var work=new Workspace(store,_=>new(Creds,fake))){
+                Assert(work.Network.CustomUrl=="https://dns.alidns.com/dns-query","custom DoH URL persisted");
+                await work.ConnectAsync(Creds);
+                Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.ApprovalMode=="turbo"&&work.CustomSkills.Count==1,"custom model and skills remembered across restart");
+            }
+        });
         Console.WriteLine($"{passed} meaningful checks passed.");
     }
     sealed class DnsFake:HttpMessageHandler {

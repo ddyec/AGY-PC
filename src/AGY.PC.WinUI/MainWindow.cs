@@ -53,6 +53,8 @@ internal sealed class MainWindow : Window {
         mode = new() { Header = "执行方式", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
         theme = new() { Header = "界面主题", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
         presentation = new() { Header = "输出展示方式", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
+    private readonly TextBox customModelBox = new() { Header = "自由指定模型 ID（可选，留空则使用上方列表所选模型）", PlaceholderText = "如 gemini-2.5-pro / claude-sonnet-4-5…", CornerRadius = new CornerRadius(8) },
+        customWorkspaceBox = new() { Header = "自由指定服务器工作区目录路径", PlaceholderText = "/home/ubuntu/project", CornerRadius = new CornerRadius(8) };
     private readonly TextBox address = new() { Header = "服务器地址", Text = "https://agy.yectech.uk", PlaceholderText = "https://你的服务器", CornerRadius = new CornerRadius(8) };
     private readonly PasswordBox token = new() { Header = "连接密钥", PasswordRevealMode = PasswordRevealMode.Peek, CornerRadius = new CornerRadius(8) };
     private readonly ProgressRing progress = new() { IsActive = false, Width = 20, Height = 20 };
@@ -61,10 +63,14 @@ internal sealed class MainWindow : Window {
     private readonly Button send, queueBtn, steerBtn, stop, save, latest;
     private readonly FileBrowser files;
     private readonly BuildPane builds;
+    private readonly StackPanel customSkillsHost = new() { Spacing = 8 }, workspaceSkillsHost = new() { Spacing = 8 };
+    private AgySkillItem[] discoveredSkills = [];
     private readonly bool uiCheck;
-    private bool busy, rendering, following = true, mentionOpen;
+    private bool busy, rendering, following = true, mentionOpen, loadingSession;
+    private int sessionLoadEpoch;
+    private Session[] currentHistoryItems = [];
     private string signature = "", session = "";
-    private readonly UIElement login, chat, settings;
+    private readonly UIElement login, chat, skillsPage, settings;
 
     public MainWindow(Workspace work, bool uiCheck) {
         StartupLog.Mark("window.constructor.enter");
@@ -125,18 +131,22 @@ internal sealed class MainWindow : Window {
             connection,
             heading,
             taskSummary,
-            () => Run(() => { work.NewConversation(); ChatPage(); return Task.CompletedTask; }),
+            () => { work.NewConversation(); ChatPage(); Render(); },
             () => Run(ChooseWorkspaceAsync),
             () => Run(TaskOptionsAsync),
-            headerPresentationBtn);
+            headerPresentationBtn,
+            () => Run(work.ReloadAsync),
+            () => Run(NetworkSettingsAsync));
         host.Children.Add(shell.View);
 
         chat = MakeChat();
+        skillsPage = MakeSkillsPage();
         settings = MakeSettings();
         files = new FileBrowser(this, work, false, false);
         builds = new BuildPane(this, work);
         shell.Pages.Children.Add(chat);
         shell.Pages.Children.Add(files.View);
+        shell.Pages.Children.Add(skillsPage);
         shell.Pages.Children.Add(builds.View);
         shell.Pages.Children.Add(settings);
         shell.Navigated += ShowPage;
@@ -144,9 +154,11 @@ internal sealed class MainWindow : Window {
 
         root.SizeChanged += (_, _) => shell.Resize(root.ActualWidth);
         root.KeyDown += (_, e) => {
-            if (e.Key == VirtualKey.N && Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down) && work.Connected && !busy) {
+            if (e.Key == VirtualKey.N && Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down) && work.Connected && work.Pending is null) {
                 e.Handled = true;
-                Run(() => { work.NewConversation(); ChatPage(); return Task.CompletedTask; });
+                work.NewConversation();
+                ChatPage();
+                Render();
             }
         };
 
@@ -191,13 +203,26 @@ internal sealed class MainWindow : Window {
             following = transcript.ScrollableHeight - transcript.VerticalOffset < 64;
             latest.Visibility = following ? Visibility.Collapsed : Visibility.Visible;
         };
-        model.SelectionChanged += (_, _) => { if (!rendering) Efforts(work.Settings.Effort); };
+        model.SelectionChanged += (_, _) => {
+            if (rendering) return;
+            customModelBox.Text = "";
+            Efforts(work.Settings.Effort);
+            AutoSaveSettings();
+        };
+        effort.SelectionChanged += (_, _) => { if (!rendering) AutoSaveSettings(); };
+        permission.SelectionChanged += (_, _) => { if (!rendering) AutoSaveSettings(); };
+        mode.SelectionChanged += (_, _) => { if (!rendering) AutoSaveSettings(); };
 
         var historyMenu = new MenuFlyout();
+        var refreshItem = new MenuFlyoutItem { Text = "重新从服务器读取此会话" };
+        refreshItem.Click += (_, _) => {
+            if (history.SelectedItem is Session s) SelectSessionAsync(s.Id, forceRefresh: true);
+        };
         var rename = new MenuFlyoutItem { Text = "重命名" };
         rename.Click += (_, _) => Run(RenameAsync);
         var delete = new MenuFlyoutItem { Text = "删除会话历史" };
         delete.Click += (_, _) => Run(DeleteAsync);
+        historyMenu.Items.Add(refreshItem);
         historyMenu.Items.Add(rename);
         historyMenu.Items.Add(delete);
         history.ContextFlyout = historyMenu;
@@ -205,10 +230,13 @@ internal sealed class MainWindow : Window {
         historySearch.TextChanged += (_, _) => History();
         history.SelectionChanged += (_, _) => {
             if (!rendering && history.SelectedItem is Session s && s.Id != work.Selected?.Id)
-                Run(async () => { await work.SelectAsync(s.Id); ChatPage(); });
+                SelectSessionAsync(s.Id);
         };
         history.ItemClick += (_, e) => {
-            if (!busy && e.ClickedItem is Session selected && selected.Id == work.Selected?.Id) ChatPage();
+            if (e.ClickedItem is Session selected) {
+                if (selected.Id != work.Selected?.Id) SelectSessionAsync(selected.Id);
+                else ChatPage();
+            }
         };
         theme.SelectionChanged += (_, _) => {
             if (rendering) return;
@@ -408,8 +436,9 @@ internal sealed class MainWindow : Window {
         quickModel.MaxWidth = 240;
 
         var attachBtn = Ui.ToolbarButton("附件", Symbol.Attach, "上传文件到当前对话", () => Run(UploadAsync));
-        var mentionBtn = Ui.ToolbarButton("@ 引用", null, "引用工作区文件或整个文件夹", () => Run(MentionAsync));
-        var actions = Ui.Inline(attachBtn, mentionBtn, quickModel, composerPresentationBtn);
+        var mentionBtn = Ui.ToolbarButton("@ 引用", null, "引用工作区文件、文件夹或自由指定路径", () => Run(MentionAsync));
+        var skillsBtn = Ui.ToolbarButton("/ 技能与指令", null, "选择 Antigravity 官方斜杠工作流、内置 Skills 或自定义技能", () => Run(SkillsPickerAsync));
+        var actions = Ui.Inline(attachBtn, mentionBtn, skillsBtn, quickModel, composerPresentationBtn);
         actions.Spacing = 6;
         var actionsScroll = new ScrollViewer {
             Content = actions,
@@ -441,6 +470,168 @@ internal sealed class MainWindow : Window {
         return page;
     }
 
+    private UIElement CreateSkillRowCard(AgySkillItem item, Action? onDelete = null) {
+        var topRow = new Grid { ColumnSpacing = 10 };
+        topRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        topRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+
+        var catTag = Ui.Surface(Ui.Caption(item.Category), "LayerFillColorDefaultBrush", new Thickness(7, 2, 7, 2), 6);
+        var titleStack = Ui.Inline(Ui.Title(item.Name, 14), catTag);
+        titleStack.Spacing = 8;
+        topRow.Children.Add(titleStack);
+
+        var useBtn = Ui.Button("填入对话", () => {
+            work.ApplySkill(item);
+            ChatPage();
+            Render();
+            composer.Focus(FocusState.Programmatic);
+        }, true);
+        useBtn.MinHeight = 30;
+        useBtn.Height = 30;
+        useBtn.Padding = new Thickness(12, 4, 12, 4);
+
+        if (onDelete is not null) {
+            var delBtn = Ui.ToolbarButton("删除", Symbol.Delete, "删除此自定义技能", onDelete);
+            var btnRow = Ui.Inline(useBtn, delBtn);
+            btnRow.Spacing = 6;
+            Grid.SetColumn(btnRow, 1);
+            topRow.Children.Add(btnRow);
+        } else {
+            Grid.SetColumn(useBtn, 1);
+            topRow.Children.Add(useBtn);
+        }
+
+        var desc = Ui.Caption(item.Description);
+        desc.LineHeight = 19;
+        var body = Ui.Stack(topRow, desc);
+        body.Spacing = 6;
+        return Ui.Surface(body, "LayerFillColorAltBrush", new Thickness(14, 10, 12, 10), 10);
+    }
+
+    private void RenderCustomSkills() {
+        customSkillsHost.Children.Clear();
+        if (work.CustomSkills.Count == 0) {
+            customSkillsHost.Children.Add(Ui.Caption("尚未创建自定义技能。点击上方「新建自定义技能 / 指令」可自由添加常用提示词、专属工作流或自定义 SKILL 模板，并自动持久记忆。"));
+            return;
+        }
+        foreach (var skill in work.CustomSkills) {
+            var skillId = skill.Id;
+            customSkillsHost.Children.Add(CreateSkillRowCard(skill, () => {
+                work.RemoveCustomSkill(skillId);
+                RenderCustomSkills();
+            }));
+        }
+    }
+
+    private void RenderWorkspaceSkills() {
+        workspaceSkillsHost.Children.Clear();
+        if (discoveredSkills.Length == 0) {
+            workspaceSkillsHost.Children.Add(Ui.Caption("点击「扫描当前工作区 Skills 与规则」可自动检测项目下的 .agents/skills/、.agent/skills/、AGENTS.md 与 GEMINI.md。"));
+            return;
+        }
+        foreach (var item in discoveredSkills) {
+            workspaceSkillsHost.Children.Add(CreateSkillRowCard(item));
+        }
+    }
+
+    private async Task RefreshWorkspaceSkillsAsync() {
+        discoveredSkills = await work.DiscoverWorkspaceSkillsAsync();
+        RenderWorkspaceSkills();
+    }
+
+    private async Task NewCustomSkillAsync() {
+        var nameBox = new TextBox { Header = "技能或指令名称", PlaceholderText = "如：/code-review  或  深度重构规范", CornerRadius = new CornerRadius(8) };
+        var descBox = new TextBox { Header = "用途说明", PlaceholderText = "简要说明该技能适用的场景…", CornerRadius = new CornerRadius(8) };
+        var triggerBox = new TextBox {
+            Header = "触发提示词或指令内容（填入对话框的文本）",
+            PlaceholderText = "输入点击该技能后自动填入对话输入框的完整指令…",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 96,
+            CornerRadius = new CornerRadius(8)
+        };
+        var fileBox = new TextBox {
+            Header = "自动关联引用文件路径（可选，支持自由指定 SKILL.md 或规则文件）",
+            PlaceholderText = "如 .agents/skills/my-skill/SKILL.md 或留空",
+            CornerRadius = new CornerRadius(8)
+        };
+        var stack = Ui.Stack(nameBox, descBox, triggerBox, fileBox);
+        stack.MinWidth = 420;
+        if (await DialogAsync("新建自定义技能 / 指令", stack, "保存技能") != ContentDialogResult.Primary) return;
+        work.SaveCustomSkill(nameBox.Text, descBox.Text, triggerBox.Text, fileBox.Text);
+        RenderCustomSkills();
+    }
+
+    private async Task SkillsPickerAsync() {
+        var listStack = Ui.Stack();
+        listStack.Spacing = 8;
+        listStack.MinWidth = 480;
+
+        if (work.CustomSkills.Count > 0) {
+            listStack.Children.Add(Ui.SectionLabel("自定义技能与常用指令"));
+            foreach (var item in work.CustomSkills) listStack.Children.Add(CreateSkillRowCard(item));
+        }
+
+        listStack.Children.Add(Ui.SectionLabel("ANTIGRAVITY 官方斜杠工作流"));
+        foreach (var item in AgyCatalog.OfficialSlashCommands) listStack.Children.Add(CreateSkillRowCard(item));
+
+        listStack.Children.Add(Ui.SectionLabel("ANTIGRAVITY 官方内置 SKILLS 与定制模板"));
+        foreach (var item in AgyCatalog.BuiltinSkills) listStack.Children.Add(CreateSkillRowCard(item));
+
+        if (discoveredSkills.Length > 0) {
+            listStack.Children.Add(Ui.SectionLabel("当前工作区 SKILLS 与规则"));
+            foreach (var item in discoveredSkills) listStack.Children.Add(CreateSkillRowCard(item));
+        }
+
+        var result = await DialogAsync("选择技能与斜杠工作流", new ScrollViewer { Content = listStack, MaxHeight = 500 }, "关闭", "打开技能与扩展页");
+        if (result == ContentDialogResult.Secondary) shell.Navigate("skills");
+    }
+
+    private UIElement MakeSkillsPage() {
+        var customHeader = new Grid { ColumnSpacing = 12 };
+        customHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        customHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        customHeader.Children.Add(Ui.Stack(
+            Ui.Title("自定义技能与指令（支持自由指定与持久记忆）", 16),
+            Ui.Caption("自由定义常用工作流、专属 SKILL.md 路径或项目提示词模板，保存在当前账号配置中。")));
+        var addCustomBtn = Ui.Action("新建自定义技能 / 指令", Symbol.Add, () => Run(NewCustomSkillAsync), true);
+        Grid.SetColumn(addCustomBtn, 1);
+        customHeader.Children.Add(addCustomBtn);
+        RenderCustomSkills();
+        var customCard = Ui.Card(Ui.Stack(customHeader, customSkillsHost));
+
+        var wsHeader = new Grid { ColumnSpacing = 12 };
+        wsHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        wsHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        wsHeader.Children.Add(Ui.Stack(
+            Ui.Title("当前项目工作区 Skills 与规则（SKILL.md / AGENTS.md / GEMINI.md）", 16),
+            Ui.Caption("自动识别服务器项目中的 .agents/skills/、.agent/skills/、AGENTS.md 与 GEMINI.md，一键引用并激活。")));
+        var scanBtn = Ui.Action("扫描当前工作区 Skills 与规则", Symbol.Refresh, () => Run(RefreshWorkspaceSkillsAsync));
+        Grid.SetColumn(scanBtn, 1);
+        wsHeader.Children.Add(scanBtn);
+        RenderWorkspaceSkills();
+        var wsCard = Ui.Card(Ui.Stack(wsHeader, workspaceSkillsHost));
+
+        var builtinStack = Ui.Stack(
+            Ui.Title("Antigravity 官方定制体系与内置 Skills", 16),
+            Ui.Caption("官方内置的 agy-customizations（Skills/Rules/Workflows/MCP 定制指南）与 antigravity-guide（AGY 2.0 完整参考），以及标准模板生成器。"));
+        foreach (var item in AgyCatalog.BuiltinSkills) builtinStack.Children.Add(CreateSkillRowCard(item));
+        var builtinCard = Ui.Card(builtinStack);
+
+        var slashStack = Ui.Stack(
+            Ui.Title("Antigravity 官方斜杠工作流（Slash Workflows）", 16),
+            Ui.Caption("官方支持的交互式斜杠指令，点击「填入对话」即可在当前对话中触发对应工作流模式。"));
+        foreach (var item in AgyCatalog.OfficialSlashCommands) slashStack.Children.Add(CreateSkillRowCard(item));
+        var slashCard = Ui.Card(slashStack);
+
+        var panel = Ui.Stack(customCard, wsCard, builtinCard, slashCard);
+        panel.Spacing = 16;
+        panel.MaxWidth = 840;
+        panel.HorizontalAlignment = HorizontalAlignment.Stretch;
+        panel.Margin = new Thickness(0, 4, 0, 16);
+        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
     private UIElement MakeSettings() {
         permission.Items.Add(new Choice("review", "Restriction · 逐项审批"));
         permission.Items.Add(new Choice("turbo", "Turbo · 自动执行"));
@@ -455,23 +646,32 @@ internal sealed class MainWindow : Window {
 
         var taskButtons = Ui.Inline(save, Ui.Action("刷新可用模型", Symbol.Refresh, () => Run(work.RefreshModelsAsync)));
         var tasks = Ui.Stack(
-            Ui.Title("模型与默认任务策略", 16),
-            Ui.Caption("保存后将作为新建对话的默认配置；已有历史对话保留各自原有的模型与策略。"),
+            Ui.Title("模型与默认任务策略（自动记忆偏好）", 16),
+            Ui.Caption("切换下拉选项或保存自由指定的模型 ID 后将立即持久记忆；新建对话自动沿用你上次记住的模型与策略。"),
             Ui.Pair(model, effort),
+            customModelBox,
             Ui.Pair(permission, mode),
             taskButtons);
         tasks.Spacing = 14;
 
+        var workspaceActions = Ui.Inline(
+            Ui.Button("使用上方指定路径", () => Run(async () => {
+                if (string.IsNullOrWhiteSpace(customWorkspaceBox.Text)) throw new InvalidOperationException("请输入服务器工作区路径。");
+                await work.ConfigureAsync(work.Settings with { Workspace = customWorkspaceBox.Text.Trim() });
+            }), true),
+            Ui.Action("浏览服务器目录…", Symbol.Folder, () => Run(ChooseWorkspaceAsync)));
         var project = Ui.Stack(
-            Ui.Title("当前服务器工作区", 16),
-            Ui.Caption("选择远程工作文件夹；聊天与文件与产物面板共享同一个项目目录。"),
-            Ui.Action("切换服务器项目目录", Symbol.Folder, () => Run(ChooseWorkspaceAsync)));
+            Ui.Title("当前服务器工作区（支持自由指定）", 16),
+            Ui.Caption("可直接输入任意服务器工作区目录路径，或点击浏览文件夹；聊天与文件面板共享同一个项目目录。"),
+            customWorkspaceBox,
+            workspaceActions);
         project.Spacing = 12;
 
         var appearance = Ui.Stack(
-            Ui.Title("界面外观与消息展示", 16),
-            Ui.Caption("支持「原版（全部内容）」、「步骤摘要（展示思考过程）」与「结论优先」三种模式，也可在对话页直接切换。"),
-            Ui.Pair(theme, presentation));
+            Ui.Title("界面外观与消息展示（自动记忆）", 16),
+            Ui.Caption("支持「原版（全部内容）」、「步骤摘要（展示思考过程）」与「结论优先」三种模式，切换后立即生效并持久保存。"),
+            Ui.Pair(theme, presentation),
+            Ui.Action("打开技能与扩展（Skills / 斜杠指令）", Symbol.Setting, () => shell.Navigate("skills")));
         appearance.Spacing = 12;
 
         var accountActions = Ui.Inline(
@@ -480,7 +680,7 @@ internal sealed class MainWindow : Window {
             Ui.Action("切换服务器或连接密钥", Symbol.Switch, () => { work.Disconnect(); Render(); }));
         var account = Ui.Stack(
             Ui.Title("连接、网络与真实模型额度", 16),
-            Ui.Caption("查看 Gemini / Claude / GPT 模型的 5 小时与每周剩余额度百分比及重置时间，或管理加密 DNS（DoH）。"),
+            Ui.Caption("查看 Gemini / Claude / GPT 模型的 5 小时与每周剩余额度百分比及重置时间，或优化 DNS / DoH 网络链路。"),
             accountActions);
         account.Spacing = 12;
 
@@ -497,8 +697,19 @@ internal sealed class MainWindow : Window {
 
     private async Task TaskOptionsAsync() {
         var current = work.Settings;
-        var models = new ComboBox { Header = "模型", ItemsSource = work.Families, DisplayMemberPath = "Name", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
+        var models = new ComboBox { Header = "从列表选择模型", ItemsSource = work.Families, DisplayMemberPath = "Name", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
+        var customModel = new TextBox {
+            Header = "或自由指定模型 ID（留空则使用上方列表模型）",
+            PlaceholderText = "如 gemini-2.5-pro / claude-sonnet-4-5…",
+            Text = work.Families.Any(f => f.Id == current.Model) ? "" : current.Model,
+            CornerRadius = new CornerRadius(8)
+        };
         var thoughts = new ComboBox { Header = "思考强度", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
+        var customEffort = new TextBox {
+            Header = "或自由指定思考强度（可选，如 low / medium / high / xhigh）",
+            PlaceholderText = "留空则使用上方所选思考强度",
+            CornerRadius = new CornerRadius(8)
+        };
         var policy = new ComboBox { Header = "审批策略", ItemsSource = new[] { new Choice("review", "Restriction · 逐项审批"), new Choice("turbo", "Turbo · 自动执行") }, HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
         var execution = new ComboBox { Header = "执行方式", ItemsSource = new[] { new Choice("plan", "先做计划"), new Choice("accept-edits", "直接实施") }, HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
         var outputMode = new ComboBox {
@@ -516,21 +727,30 @@ internal sealed class MainWindow : Window {
             thoughts.ItemsSource = family.Efforts.Select(e => new Choice(e, FileRules.EffortLabel(e))).ToArray();
             thoughts.SelectedItem = thoughts.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.Effort) ?? thoughts.Items.Cast<Choice>().FirstOrDefault(e => e.Id == family.DefaultEffort);
         }
-        models.SelectionChanged += (_, _) => UpdateEfforts();
-        models.SelectedItem = work.Families.FirstOrDefault(f => f.Id == current.Model);
+        models.SelectionChanged += (_, _) => {
+            customModel.Text = "";
+            UpdateEfforts();
+        };
+        models.SelectedItem = work.Families.FirstOrDefault(f => f.Id == current.Model) ?? work.Families.FirstOrDefault();
         UpdateEfforts();
         policy.SelectedItem = policy.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.ApprovalMode);
         execution.SelectedItem = execution.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.Mode);
         outputMode.SelectedItem = outputMode.Items.Cast<Choice>().FirstOrDefault(e => e.Id == work.Presentation) ?? outputMode.Items.Cast<Choice>().First();
-        var dialogBody = Ui.Stack(models, thoughts, policy, execution, outputMode);
-        dialogBody.MinWidth = 360;
-        if (await DialogAsync("模型、任务策略与展示方式", dialogBody, "保存") != ContentDialogResult.Primary) return;
+        var dialogBody = Ui.Stack(models, customModel, thoughts, customEffort, policy, execution, outputMode);
+        dialogBody.MinWidth = 380;
+        if (await DialogAsync("模型、任务策略与展示方式（自动记忆）", new ScrollViewer { Content = dialogBody, MaxHeight = 520 }, "保存并记住") != ContentDialogResult.Primary) return;
         if (outputMode.SelectedItem is Choice pres) {
             work.SetPresentation(pres.Id);
             signature = "";
         }
-        if (models.SelectedItem is ModelFamily family && thoughts.SelectedItem is Choice e && policy.SelectedItem is Choice p && execution.SelectedItem is Choice m)
-            await work.ConfigureAsync(new(family.Id, e.Id, p.Id, m.Id, current.Workspace));
+        var chosenModel = !string.IsNullOrWhiteSpace(customModel.Text)
+            ? customModel.Text.Trim()
+            : (models.SelectedItem as ModelFamily)?.Id ?? current.Model;
+        var chosenEffort = !string.IsNullOrWhiteSpace(customEffort.Text)
+            ? customEffort.Text.Trim()
+            : (thoughts.SelectedItem as Choice)?.Id ?? current.Effort;
+        if (policy.SelectedItem is Choice p && execution.SelectedItem is Choice m)
+            await work.ConfigureAsync(new(chosenModel, chosenEffort, p.Id, m.Id, current.Workspace));
         Render();
     }
 
@@ -544,21 +764,77 @@ internal sealed class MainWindow : Window {
         effort.SelectedItem = effort.Items.Cast<Choice>().FirstOrDefault(e => e.Id == preferred) ?? effort.Items.Cast<Choice>().FirstOrDefault(e => e.Id == family.DefaultEffort);
     }
 
+    private async void AutoSaveSettings() {
+        if (rendering || !work.Connected || work.Pending is not null) return;
+        try {
+            var chosenModel = !string.IsNullOrWhiteSpace(customModelBox.Text)
+                ? customModelBox.Text.Trim()
+                : (model.SelectedItem as ModelFamily)?.Id;
+            if (string.IsNullOrWhiteSpace(chosenModel) || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
+                return;
+            var workspacePath = !string.IsNullOrWhiteSpace(customWorkspaceBox.Text)
+                ? customWorkspaceBox.Text.Trim()
+                : work.Settings.Workspace;
+            var candidate = new TaskSettings(chosenModel, e.Id, p.Id, m.Id, workspacePath);
+            if (candidate == work.Settings) return;
+            await work.ConfigureAsync(candidate);
+            Render();
+        } catch (Exception error) {
+            Error(error);
+        }
+    }
+
     private async Task SaveSettingsAsync() {
-        if (model.SelectedItem is not ModelFamily f || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
-            throw new InvalidOperationException("请选择有效的模型、强度和策略。");
-        await work.ConfigureAsync(new(f.Id, e.Id, p.Id, m.Id, work.Settings.Workspace));
+        var chosenModel = !string.IsNullOrWhiteSpace(customModelBox.Text)
+            ? customModelBox.Text.Trim()
+            : (model.SelectedItem as ModelFamily)?.Id;
+        if (string.IsNullOrWhiteSpace(chosenModel) || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
+            throw new InvalidOperationException("请选择或输入有效的模型、强度和策略。");
+        var workspacePath = !string.IsNullOrWhiteSpace(customWorkspaceBox.Text)
+            ? customWorkspaceBox.Text.Trim()
+            : work.Settings.Workspace;
+        await work.ConfigureAsync(new(chosenModel, e.Id, p.Id, m.Id, workspacePath));
     }
 
     private void ShowPage(string page) {
         chat.Visibility = page == "chat" ? Visibility.Visible : Visibility.Collapsed;
         files.View.Visibility = page == "files" ? Visibility.Visible : Visibility.Collapsed;
+        skillsPage.Visibility = page == "skills" ? Visibility.Visible : Visibility.Collapsed;
         builds.View.Visibility = page == "build" ? Visibility.Visible : Visibility.Collapsed;
         settings.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
         if (page == "files" && !uiCheck) Run(files.LoadAsync);
+        if (page == "skills") {
+            RenderCustomSkills();
+            if (!uiCheck && work.Connected && discoveredSkills.Length == 0) Run(RefreshWorkspaceSkillsAsync);
+        }
     }
 
     internal void ChatPage() { shell.Navigate("chat"); }
+
+    private async void SelectSessionAsync(string id, bool forceRefresh = false) {
+        if (string.IsNullOrWhiteSpace(id) || !work.Connected) return;
+        var epoch = ++sessionLoadEpoch;
+        loadingSession = true;
+        notice.IsOpen = false;
+        signature = "";
+        ChatPage();
+        Render();
+        try {
+            await work.SelectAsync(id, forceRefresh);
+            if (epoch == sessionLoadEpoch) {
+                signature = "";
+                ChatPage();
+            }
+        } catch (Exception error) {
+            if (epoch == sessionLoadEpoch) Error(error);
+        } finally {
+            if (epoch == sessionLoadEpoch) {
+                loadingSession = false;
+                signature = "";
+                Render();
+            }
+        }
+    }
 
     internal async void Run(Func<Task> action) {
         if (busy) return;
@@ -596,7 +872,7 @@ internal sealed class MainWindow : Window {
             queueBtn.IsEnabled = canAct && hasInput;
             steerBtn.Visibility = Visibility.Collapsed;
             stop.Visibility = Visibility.Collapsed;
-            composer.PlaceholderText = "描述任务，或输入 @ 引用文件与文件夹…";
+            composer.PlaceholderText = "描述任务，点「@ 引用」关联路径，或点「/ 技能与指令」触发工作流…";
             composerHint.Text = "Ctrl + Enter 发送   ·   Enter 换行   ·   运行中支持「对话排队」与「立即引导」";
         }
     }
@@ -606,14 +882,25 @@ internal sealed class MainWindow : Window {
     }
 
     private void History() {
-        var key = historySearch.Text + "/" + work.Selected?.Id + "/" + string.Join("|", work.Sessions.Select(s => s.Id + ":" + s.DisplayName + ":" + s.Modified));
-        if (key == historySignature) return;
-        historySignature = key;
+        var key = historySearch.Text + "/" + string.Join("|", work.Sessions.Select(s => s.Id + ":" + s.DisplayName + ":" + s.Modified));
         var old = rendering;
         rendering = true;
-        history.ItemsSource = work.Sessions.Where(s => s.DisplayName.Contains(historySearch.Text, StringComparison.CurrentCultureIgnoreCase)).OrderByDescending(s => s.Modified).ToArray();
-        history.SelectedItem = history.Items.Cast<Session>().FirstOrDefault(s => s.Id == work.Selected?.Id);
-        rendering = old;
+        try {
+            if (key != historySignature) {
+                historySignature = key;
+                currentHistoryItems = work.Sessions
+                    .Where(s => s.DisplayName.Contains(historySearch.Text, StringComparison.CurrentCultureIgnoreCase))
+                    .OrderByDescending(s => s.Modified)
+                    .ToArray();
+                history.ItemsSource = currentHistoryItems;
+            }
+            var target = currentHistoryItems.FirstOrDefault(s => s.Id == work.Selected?.Id);
+            if (!ReferenceEquals(history.SelectedItem, target)) {
+                history.SelectedItem = target;
+            }
+        } finally {
+            rendering = old;
+        }
     }
 
     private void RenderQueue() {
@@ -676,8 +963,8 @@ internal sealed class MainWindow : Window {
         try {
             login.Visibility = work.Connected ? Visibility.Collapsed : Visibility.Visible;
             shell.View.Visibility = work.Connected ? Visibility.Visible : Visibility.Collapsed;
-            progress.IsActive = busy;
-            connection.Text = uiCheck && work.Connected ? "离线预览 · 示例数据" : busy ? "正在处理…" : work.ConnectionLabel;
+            progress.IsActive = busy || loadingSession;
+            connection.Text = uiCheck && work.Connected ? "离线预览 · 示例数据" : (busy || loadingSession) ? "正在处理…" : work.ConnectionLabel;
             if (!notice.IsOpen && !string.IsNullOrWhiteSpace(work.Selected?.Error ?? work.Notice)) {
                 notice.Title = "服务器状态";
                 notice.Message = work.Selected?.Error ?? work.Notice;
@@ -688,10 +975,11 @@ internal sealed class MainWindow : Window {
             ToolTipService.SetToolTip(heading, heading.Text);
             shell.SetProject(work.Connected ? Ui.Tail(work.Settings.Workspace) : "工作区");
 
-            var familyName = work.Families.FirstOrDefault(f => f.Id == work.Settings.Model)?.Name ?? "选择模型";
+            var matchedFamily = work.Families.FirstOrDefault(f => f.Id == work.Settings.Model);
+            var familyName = matchedFamily?.Name ?? (string.IsNullOrWhiteSpace(work.Settings.Model) ? "选择模型" : work.Settings.Model);
             quickModelLabel.Text = familyName + " · " + FileRules.EffortLabel(work.Settings.Effort) + " ⌄";
-            ToolTipService.SetToolTip(quickModel, "更改模型、思考强度、审批策略和执行方式");
-            quickModel.IsEnabled = !busy && work.Selected?.Running != true && work.Pending is null;
+            ToolTipService.SetToolTip(quickModel, "更改模型（支持自由指定）、思考强度、审批策略和执行方式");
+            quickModel.IsEnabled = !busy && work.Pending is null;
 
             headerPresentationLabel.Text = "展示：" + FileRules.PresentationLabel(work.Presentation) + " ⌄";
             composerPresentationLabel.Text = FileRules.PresentationLabel(work.Presentation) + " ⌄";
@@ -704,12 +992,14 @@ internal sealed class MainWindow : Window {
                 model.ItemsSource = catalog;
                 effortFamily = "";
             }
-            model.SelectedItem = work.Families.FirstOrDefault(f => f.Id == work.Settings.Model);
+            model.SelectedItem = matchedFamily ?? work.Families.FirstOrDefault();
+            customModelBox.Text = matchedFamily is null ? work.Settings.Model : "";
+            customWorkspaceBox.Text = work.Settings.Workspace;
             Efforts(work.Settings.Effort);
             permission.SelectedItem = permission.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Settings.ApprovalMode);
             mode.SelectedItem = mode.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Settings.Mode);
-            save.IsEnabled = !busy && work.Selected?.Running != true && work.Pending is null;
-            model.IsEnabled = effort.IsEnabled = permission.IsEnabled = mode.IsEnabled = save.IsEnabled;
+            save.IsEnabled = !busy && work.Pending is null;
+            model.IsEnabled = effort.IsEnabled = permission.IsEnabled = mode.IsEnabled = customModelBox.IsEnabled = customWorkspaceBox.IsEnabled = save.IsEnabled;
             theme.SelectedItem = theme.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Theme);
             presentation.SelectedItem = presentation.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Presentation);
             ApplyTheme();
@@ -726,7 +1016,7 @@ internal sealed class MainWindow : Window {
             if (work.Pending is { } waiting) {
                 var pendingActions = Ui.Inline(
                     Ui.Caption("发送结果待确认，不会自动重发。"),
-                    Ui.ToolbarButton("核对会话", null, "切换到该会话检查状态", () => Run(() => work.SelectAsync(waiting.SessionID))),
+                    Ui.ToolbarButton("核对会话", null, "切换到该会话检查状态", () => SelectSessionAsync(waiting.SessionID, forceRefresh: true)),
                     Ui.ToolbarButton("按原编号重试", null, "使用原请求编号安全重发", () => Run(work.SubmitPendingAsync)));
                 pending.Children.Add(pendingActions);
             }
@@ -751,13 +1041,13 @@ internal sealed class MainWindow : Window {
             pending.Visibility = pending.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             approvalScroll.Visibility = approvals.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-            var key = (work.Selected?.Id ?? "new") + ":" + (work.Selected?.Revision ?? 0) + ":" + (work.Selected?.Running == true ? "run" : "idle") + ":" + work.Presentation;
+            var key = (work.Selected?.Id ?? "new") + ":" + (work.Selected?.Revision ?? 0) + ":" + (work.Selected?.Running == true ? "run" : "idle") + ":" + work.Presentation + ":" + (loadingSession ? "loading" : "ready");
             if (signature != key) {
                 signature = key;
                 RenderMessages();
             }
             History();
-            history.IsEnabled = !busy;
+            history.IsEnabled = true;
             UpdateSendState();
         } finally {
             rendering = false;
@@ -792,21 +1082,43 @@ internal sealed class MainWindow : Window {
 
     private async Task NetworkSettingsAsync() {
         var current = work.Network;
-        var enable = new ToggleSwitch { Header = "加密 DNS（DoH）", IsOn = current.UseDoh, OnContent = "启用", OffContent = "使用系统 DNS" };
-        var provider = new ComboBox { Header = "DoH 服务", ItemsSource = new[] { "Cloudflare", "Google" }, SelectedItem = current.Provider, HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-        var fallback = new CheckBox { Content = "DoH 失败时回退到系统 DNS", IsChecked = current.SystemFallback };
-        provider.IsEnabled = fallback.IsEnabled = enable.IsOn;
-        enable.Toggled += (_, _) => provider.IsEnabled = fallback.IsEnabled = enable.IsOn;
+        var enable = new ToggleSwitch { Header = "加密 DNS（DoH）", IsOn = current.UseDoh, OnContent = "启用 DoH 辅助解析", OffContent = "仅使用系统 / 代理 DNS（零延迟）" };
+        var provider = new ComboBox {
+            Header = "DoH 服务商",
+            ItemsSource = new[] { "AliDNS", "DNSPod", "Cloudflare", "Google", "Custom" },
+            SelectedItem = new[] { "AliDNS", "DNSPod", "Cloudflare", "Google", "Custom" }.Contains(current.Provider) ? current.Provider : "Cloudflare",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(8)
+        };
+        var customUrl = new TextBox {
+            Header = "自定义 DoH 地址（可选，支持自由指定 https://...）",
+            PlaceholderText = "https://dns.alidns.com/dns-query",
+            Text = current.CustomUrl ?? "",
+            CornerRadius = new CornerRadius(8)
+        };
+        var fallback = new CheckBox { Content = "优先使用系统 / TUN 缓存 DNS，失败时再回退 DoH（彻底避免境外 DoH 节点超时卡顿）", IsChecked = current.SystemFallback };
+        void SyncNetControls() {
+            provider.IsEnabled = customUrl.IsEnabled = fallback.IsEnabled = enable.IsOn;
+        }
+        SyncNetControls();
+        enable.Toggled += (_, _) => SyncNetControls();
         var dialog = new ContentDialog {
             XamlRoot = root.XamlRoot,
-            Title = "网络设置",
+            Title = "网络链路与 DNS 设置",
             PrimaryButtonText = work.Connected ? "保存并重新连接" : "保存",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
-            Content = Ui.Stack(enable, provider, fallback, Ui.Caption("使用代理时由代理解析服务器域名。DoH 服务只接收域名查询，不接收连接密钥和聊天内容。设置保存在这台电脑上。"))
+            Content = Ui.Stack(
+                enable,
+                provider,
+                customUrl,
+                fallback,
+                Ui.Caption("提示：若在国内网络或开启 Clash / Mihomo TUN 模式下感觉点击操作有数秒延迟，建议开启「优先使用系统 / TUN 缓存 DNS」或直接切换至 AliDNS / 仅系统 DNS。"))
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        work.SetNetwork(new(enable.IsOn, provider.SelectedItem as string ?? "Cloudflare", fallback.IsChecked == true));
+        var selectedProvider = provider.SelectedItem as string ?? "Cloudflare";
+        var customUrlText = string.IsNullOrWhiteSpace(customUrl.Text) ? null : customUrl.Text.Trim();
+        work.SetNetwork(new(enable.IsOn, selectedProvider, fallback.IsChecked == true, customUrlText));
         if (work.Connected && work.SavedConnection is { } saved) await work.ConnectAsync(saved);
     }
 
@@ -1104,6 +1416,20 @@ internal sealed class MainWindow : Window {
             }
         }
 
+        if (messages.Children.Count == 0 && loadingSession) {
+            var loadRow = Ui.Inline(new ProgressRing { Width = 18, Height = 18, IsActive = true }, Ui.Title("正在从服务器读取历史对话记录…", 14.5));
+            loadRow.Spacing = 10;
+            messages.Children.Add(Ui.Card(loadRow, 18, 14));
+        } else if (messages.Children.Count == 0 && work.Selected is { } emptySession) {
+            var emptyTitle = Ui.Title($"历史会话「{emptySession.DisplayName}」暂无消息记录", 15.5);
+            var emptyDesc = Ui.Caption($"此会话创建于工作区 {emptySession.Cwd}（模型：{emptySession.Model}），目前在服务器上尚未保存任何对话消息。你可以直接在下方输入框发送消息继续该会话，或使用下方操作。");
+            emptyDesc.LineHeight = 20;
+            var emptyActions = Ui.Inline(
+                Ui.Action("重新从服务器读取", Symbol.Refresh, () => SelectSessionAsync(emptySession.Id, forceRefresh: true), true),
+                Ui.Action("删除此空会话", Symbol.Delete, () => Run(() => work.DeleteAsync(emptySession))));
+            messages.Children.Add(Ui.Card(Ui.Stack(emptyTitle, emptyDesc, emptyActions), 20, 14));
+        }
+
         welcome.Visibility = messages.Children.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         transcript.Visibility = messages.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         DispatcherQueue.TryEnqueue(() => {
@@ -1242,17 +1568,11 @@ internal sealed class MainWindow : Window {
     }
 
     private async Task ChooseWorkspaceAsync() {
-        if (work.Selected is not null) {
-            if (work.Pending is not null || work.Selected.Running)
-                throw new InvalidOperationException("请先结束当前任务或核对待确认发送。");
-            if (await DialogAsync("切换项目", Ui.Text("当前对话会保留。新建一个对话后，可以选择其他项目。"), "新建对话并选择") != ContentDialogResult.Primary)
-                return;
-            work.NewConversation();
-            ChatPage();
-        }
+        if (work.Pending is not null || work.Selected?.Running == true)
+            throw new InvalidOperationException("请先结束当前任务或核对待确认发送。");
         var browser = new FileBrowser(this, work, false, true);
         await browser.LoadAsync();
-        await DialogAsync("选择服务器项目", browser.View, "完成");
+        await DialogAsync("选择或自由指定服务器项目", browser.View, "完成");
     }
 
     private async Task RenameAsync() {

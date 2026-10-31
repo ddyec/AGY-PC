@@ -11,6 +11,7 @@ internal sealed class FileBrowser {
     internal Grid View { get; } = new() { RowSpacing = 12, MaxWidth = 960, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox scope = new() { ItemsSource = new[] { "工作区", "已上传", "AGY 产物" }, SelectedIndex = 0, MinWidth = 136, CornerRadius = new CornerRadius(8) };
     private readonly TextBox search = new() { PlaceholderText = "搜索当前目录中的文件或文件夹…" };
+    private readonly TextBox customPathBox = new() { PlaceholderText = "自由输入或粘贴服务器路径（支持绝对路径或相对工作区路径）…" };
     private readonly TextBlock trail = Ui.Caption("当前项目");
     private readonly ListView entries = new() { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = false, MinHeight = 220 };
     private readonly CheckBox hidden = new() { Content = "显示隐藏项", FontSize = 12, MinWidth = 0 }, recent = new() { Content = "最近修改优先", FontSize = 12, MinWidth = 0 };
@@ -41,6 +42,25 @@ internal sealed class FileBrowser {
         View.RowDefinitions.Add(new() { Height = GridLength.Auto });
 
         Ui.StyleSearchBox(search);
+        Ui.StyleSearchBox(customPathBox);
+        customPathBox.PlaceholderText = chooseWorkspace
+            ? "自由指定服务器项目目录路径（如 /home/ubuntu/project），输入后点右侧按钮生效…"
+            : "自由输入服务器文件或目录路径（如 src/Main.cs 或 /abs/path），可直接 @ 引用…";
+
+        var customPathRow = new Grid { ColumnSpacing = 8 };
+        customPathRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        customPathRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        customPathRow.Children.Add(customPathBox);
+        var applyCustomPath = Ui.Button(chooseWorkspace ? "使用指定路径" : "@ 引用此路径", () => Act(ApplyCustomPathAsync), true);
+        Grid.SetColumn(applyCustomPath, 1);
+        customPathRow.Children.Add(applyCustomPath);
+        customPathBox.KeyDown += (_, e) => {
+            if (e.Key == Windows.System.VirtualKey.Enter) {
+                e.Handled = true;
+                Act(ApplyCustomPathAsync);
+            }
+        };
+
         trail.FontWeight = new() { Weight = 500 };
         var trailBadge = Ui.Surface(trail, "LayerFillColorAltBrush", new Thickness(10, 5, 10, 5), 6);
 
@@ -61,8 +81,8 @@ internal sealed class FileBrowser {
         Grid.SetColumn(filters, 1);
         topRow.Children.Add(filters);
 
-        var headerStack = Ui.Stack(topRow, search);
-        headerStack.Spacing = 10;
+        var headerStack = Ui.Stack(topRow, customPathRow, search);
+        headerStack.Spacing = 8;
         var headerCard = Ui.Surface(headerStack, "CardBackgroundFillColorDefaultBrush", new Thickness(14, 12, 14, 12), 12);
         View.Children.Add(headerCard);
 
@@ -130,6 +150,9 @@ internal sealed class FileBrowser {
         if (token != generation) return;
         listing = result;
         trail.Text = path.Length == 0 ? "根目录 /" : path + "/";
+        if (chooseWorkspace && string.IsNullOrWhiteSpace(customPathBox.Text)) {
+            customPathBox.Text = result.Root.TrimEnd('/') + (path.Length > 0 ? "/" + path : "");
+        }
         Filter();
     }
 
@@ -212,6 +235,31 @@ internal sealed class FileBrowser {
         if (chooseWorkspace) await work.ConfigureAsync(work.Settings with { Workspace = full });
         else {
             work.AddReference(new(full, FileRules.Label(Scope, "", path.Length == 0 ? "当前项目" : path, true), true));
+            window.ChatPage();
+        }
+    }
+
+    private async Task ApplyCustomPathAsync() {
+        var raw = customPathBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(raw)) return;
+        var normalized = raw.Replace('\\', '/');
+        if (chooseWorkspace) {
+            if (!normalized.StartsWith('/')) {
+                var root = work.Status?.Roots.FirstOrDefault() ?? work.Settings.Workspace;
+                normalized = root.TrimEnd('/') + "/" + normalized.TrimStart('/');
+            }
+            await work.ConfigureAsync(work.Settings with { Workspace = normalized.TrimEnd('/') });
+            selection.Text = "已自由指定项目路径：" + normalized.TrimEnd('/');
+        } else {
+            var full = normalized.StartsWith('/')
+                ? normalized
+                : (listing?.Root ?? work.Settings.Workspace).TrimEnd('/') + "/" + normalized.TrimStart('/');
+            var isDir = normalized.EndsWith('/');
+            var cleanFull = full.Length > 1 ? full.TrimEnd('/') : full;
+            var label = "指定/" + Ui.Tail(cleanFull) + (isDir ? "/" : "");
+            work.AddReference(new(cleanFull, label, isDir));
+            customPathBox.Text = "";
+            selection.Text = "已添加引用：" + cleanFull;
             window.ChatPage();
         }
     }

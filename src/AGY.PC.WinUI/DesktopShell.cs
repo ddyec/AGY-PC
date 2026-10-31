@@ -36,7 +36,9 @@ internal sealed class DesktopShell {
         Action newChat,
         Action chooseProject,
         Action openTaskOptions,
-        UIElement? chatPresentationControl = null) {
+        UIElement? chatPresentationControl = null,
+        Action? refreshHistory = null,
+        Action? openNetwork = null) {
         chatHeading = heading;
         presentationControl = chatPresentationControl;
         chatHeading.FontSize = 16;
@@ -73,20 +75,13 @@ internal sealed class DesktopShell {
         brandRow.Children.Add(pcTag);
         paneGrid.Children.Add(brandRow);
 
-        // New conversation button (sleek elevated card-button rather than glaring full-width neon bar)
-        var createContent = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, ColumnSpacing = 10 };
+        // Cohesive New Conversation button
+        var createContent = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, ColumnSpacing = 10, Margin = new Thickness(4, 0, 2, 0) };
         createContent.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         createContent.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         createContent.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var plusBadge = Ui.Surface(
-            Ui.Glyph(Symbol.Add, 13),
-            "LayerFillColorAltBrush",
-            new Thickness(0),
-            6,
-            false);
-        plusBadge.Width = 24;
-        plusBadge.Height = 24;
-        createContent.Children.Add(plusBadge);
+        var plusIcon = Ui.FluentGlyph("\uE710", 13.5);
+        createContent.Children.Add(plusIcon);
         var createLabel = Ui.Title("新建对话", 13.5);
         createLabel.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(createLabel, 1);
@@ -99,28 +94,33 @@ internal sealed class DesktopShell {
 
         var create = Ui.Button("新建对话", newChat);
         create.Content = createContent;
-        create.Padding = new Thickness(10, 8, 12, 8);
+        create.MinHeight = 38;
+        create.Padding = new Thickness(12, 8, 12, 8);
         create.CornerRadius = new CornerRadius(10);
         create.HorizontalAlignment = HorizontalAlignment.Stretch;
         create.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         Grid.SetRow(create, 1);
         paneGrid.Children.Add(create);
 
-        // Primary navigation destinations
+        // Primary navigation destinations with unified Fluent icon badges and breathing room from selection indicator
         foreach (var item in new[] {
-            ("chat", "对话", Symbol.Message),
-            ("files", "文件与产物", Symbol.Folder),
-            ("build", "混合构建", Symbol.Repair),
-            ("settings", "配置与额度", Symbol.Setting)
+            ("chat", "对话", "\uE8BD"),
+            ("files", "文件与产物", "\uE8B7"),
+            ("skills", "技能与扩展", "\uE945"),
+            ("build", "混合构建", "\uE90F"),
+            ("settings", "配置与额度", "\uE713")
         }) {
-            var icon = Ui.Glyph(item.Item3, 16);
+            var badge = Ui.NavIconBadge(item.Item3, 26, 13.5);
             var label = Ui.Text(item.Item2, 13.5);
-            var row = Ui.Inline(icon, label);
+            label.FontWeight = new() { Weight = 500 };
+            var row = Ui.Inline(badge, label);
             row.Spacing = 10;
+            row.Margin = new Thickness(6, 0, 2, 0);
             destinations.Items.Add(new ListViewItem {
                 Content = row,
                 Tag = item.Item1,
-                Padding = new Thickness(10, 8, 10, 8),
+                MinHeight = 38,
+                Padding = new Thickness(8, 5, 10, 5),
                 CornerRadius = new CornerRadius(8),
                 HorizontalContentAlignment = HorizontalAlignment.Stretch
             });
@@ -128,27 +128,38 @@ internal sealed class DesktopShell {
         Grid.SetRow(destinations, 2);
         paneGrid.Children.Add(destinations);
 
-        // Recent conversations header + clean search box
+        // Recent conversations header + refresh action + clean search box
         search.PlaceholderText = "搜索历史对话…";
         Ui.StyleSearchBox(search);
         var divider = Ui.Divider();
         divider.Margin = new Thickness(4, 2, 4, 4);
+        var sectionHeaderRow = new Grid { Margin = new Thickness(6, 0, 2, 0) };
+        sectionHeaderRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        sectionHeaderRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var sectionTitle = Ui.SectionLabel("最近对话");
-        sectionTitle.Margin = new Thickness(6, 0, 4, 0);
-        var historyHeader = Ui.Stack(divider, sectionTitle, search);
-        historyHeader.Spacing = 8;
+        sectionTitle.VerticalAlignment = VerticalAlignment.Center;
+        sectionHeaderRow.Children.Add(sectionTitle);
+        if (refreshHistory is not null) {
+            var refreshBtn = Ui.Icon(Symbol.Refresh, "刷新历史会话列表", refreshHistory);
+            refreshBtn.Width = 26;
+            refreshBtn.Height = 26;
+            refreshBtn.MinWidth = 26;
+            refreshBtn.MinHeight = 26;
+            Grid.SetColumn(refreshBtn, 1);
+            sectionHeaderRow.Children.Add(refreshBtn);
+        }
+        var historyHeader = Ui.Stack(divider, sectionHeaderRow, search);
+        historyHeader.Spacing = 6;
         Grid.SetRow(historyHeader, 3);
         paneGrid.Children.Add(historyHeader);
 
-        // Session list
+        // Session list (clean layout without redundant bullet dot colliding with selection bar)
         history.MaxHeight = double.PositiveInfinity;
         history.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         history.ItemTemplate = (DataTemplate)XamlReader.Load(
             "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>" +
-            "<Grid Padding='6,7' ColumnSpacing='8'>" +
-            "<Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>" +
-            "<Border Width='6' Height='6' CornerRadius='3' Background='{ThemeResource TextFillColorTertiaryBrush}' VerticalAlignment='Center' Opacity='0.65'/>" +
-            "<TextBlock Grid.Column='1' Text='{Binding DisplayName}' FontSize='13' TextWrapping='NoWrap' TextTrimming='CharacterEllipsis' VerticalAlignment='Center' ToolTipService.ToolTip='{Binding DisplayName}'/>" +
+            "<Grid Padding='8,6,6,6'>" +
+            "<TextBlock Text='{Binding DisplayName}' FontSize='13' TextWrapping='NoWrap' TextTrimming='CharacterEllipsis' VerticalAlignment='Center' ToolTipService.ToolTip='{Binding DisplayName}'/>" +
             "</Grid></DataTemplate>");
         Grid.SetRow(history, 4);
         paneGrid.Children.Add(history);
@@ -165,13 +176,12 @@ internal sealed class DesktopShell {
         footerGrid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         footerGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         footerGrid.Children.Add(statusLeft);
-        var quickSettings = Ui.Icon(Symbol.Setting, "配置与额度", () => Navigate("settings"));
-        quickSettings.Width = 28;
-        quickSettings.Height = 28;
-        quickSettings.MinWidth = 28;
-        quickSettings.MinHeight = 28;
-        Grid.SetColumn(quickSettings, 1);
-        footerGrid.Children.Add(quickSettings);
+        var quickNet = Ui.ToolbarButton("网络", Symbol.World, "配置 DNS / DoH 与网络链路", () => (openNetwork ?? (() => Navigate("settings")))());
+        quickNet.Height = 26;
+        quickNet.MinHeight = 26;
+        quickNet.Padding = new Thickness(8, 2, 8, 2);
+        Grid.SetColumn(quickNet, 1);
+        footerGrid.Children.Add(quickNet);
 
         var footerCard = Ui.Surface(footerGrid, "CardBackgroundFillColorDefaultBrush", new Thickness(12, 7, 8, 7), 10);
         Grid.SetRow(footerCard, 5);
@@ -252,6 +262,7 @@ internal sealed class DesktopShell {
         pageName.Visibility = isChat ? Visibility.Collapsed : Visibility.Visible;
         pageName.Text = page switch {
             "files" => "文件与产物",
+            "skills" => "技能与扩展",
             "build" => "混合构建",
             "settings" => "配置与额度",
             _ => "对话"

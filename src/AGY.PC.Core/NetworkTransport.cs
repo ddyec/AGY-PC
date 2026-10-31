@@ -5,18 +5,38 @@ using System.Text.Json;
 
 namespace AGY.PC.Core;
 
-public sealed record NetworkSettings(bool UseDoh = true, string Provider = "Cloudflare", bool SystemFallback = true) {
+public sealed record NetworkSettings(bool UseDoh = true, string Provider = "Cloudflare", bool SystemFallback = true, string? CustomUrl = null) {
     public void Validate() {
-        if (Provider is not ("Cloudflare" or "Google")) throw new InvalidOperationException("请选择有效的 DoH 服务。");
+        if (!string.IsNullOrWhiteSpace(CustomUrl)) {
+            if (!Uri.TryCreate(CustomUrl.Trim(), UriKind.Absolute, out var custom) || custom.Scheme != "https")
+                throw new InvalidOperationException("自定义 DoH 地址必须是有效的 HTTPS URL。");
+            return;
+        }
+        if (Provider is not ("Cloudflare" or "Google" or "AliDNS" or "DNSPod"))
+            throw new InvalidOperationException("请选择有效的 DoH 服务或填写自定义 HTTPS DoH 地址。");
     }
     [System.Text.Json.Serialization.JsonIgnore]
-    public Uri Endpoint => new(Provider == "Google" ? "https://dns.google/resolve" : "https://cloudflare-dns.com/dns-query");
+    public Uri Endpoint => !string.IsNullOrWhiteSpace(CustomUrl) && Uri.TryCreate(CustomUrl.Trim(), UriKind.Absolute, out var custom)
+        ? custom
+        : new(Provider switch {
+            "Google" => "https://dns.google/resolve",
+            "AliDNS" => "https://dns.alidns.com/resolve",
+            "DNSPod" => "https://doh.pub/dns-query",
+            _ => "https://cloudflare-dns.com/dns-query"
+        });
     [System.Text.Json.Serialization.JsonIgnore]
-    public IPAddress Bootstrap => IPAddress.Parse(Provider == "Google" ? "8.8.8.8" : "1.1.1.1");
+    public IPAddress Bootstrap => IPAddress.Parse(Provider switch {
+        "Google" => "8.8.8.8",
+        "AliDNS" => "223.5.5.5",
+        "DNSPod" => "119.29.29.29",
+        _ => "1.1.1.1"
+    });
 }
 
 // The original HTTP URI is retained: HttpClient still handles TLS, SNI and certificate validation.
 public static class NetworkTransport {
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> dohFastBypass = new(StringComparer.OrdinalIgnoreCase);
+
     public static bool UsesProxy(Uri destination, IWebProxy proxy) {
         if (proxy.IsBypassed(destination)) return false;
         var target = proxy.GetProxy(destination);
@@ -27,15 +47,22 @@ public static class NetworkTransport {
         || !host.Contains('.');
     public static HttpMessageHandler Create(Uri origin, NetworkSettings settings, HttpMessageHandler? dnsHandler=null, IWebProxy? proxy=null) {
         settings.Validate();
-        var transport = new SocketsHttpHandler { AllowAutoRedirect=false, UseCookies=false, ConnectTimeout=TimeSpan.FromSeconds(20), PooledConnectionLifetime=TimeSpan.FromMinutes(5) };
+        var transport = new SocketsHttpHandler {
+            AllowAutoRedirect = false,
+            UseCookies = false,
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(4),
+            EnableMultipleHttp2Connections = true
+        };
         if (!settings.UseDoh) return transport;
         proxy ??= HttpClient.DefaultProxy;
         transport.Proxy=proxy;
-        var dnsTransport = new SocketsHttpHandler { AllowAutoRedirect=false, UseCookies=false, ConnectTimeout=TimeSpan.FromSeconds(6) };
+        var dnsTransport = new SocketsHttpHandler { AllowAutoRedirect=false, UseCookies=false, ConnectTimeout=TimeSpan.FromSeconds(2.5) };
         // Bootstrap the known resolver without depending on broken system DNS. Proxy connections remain owned by the proxy.
         dnsTransport.ConnectCallback = async (context,ct) => {
             var destination = context.InitialRequestMessage.RequestUri!;
-            if (!UsesProxy(destination,proxy) && context.DnsEndPoint.Host.Equals(settings.Endpoint.Host,StringComparison.OrdinalIgnoreCase))
+            if (!UsesProxy(destination,proxy) && string.IsNullOrWhiteSpace(settings.CustomUrl) && context.DnsEndPoint.Host.Equals(settings.Endpoint.Host,StringComparison.OrdinalIgnoreCase))
                 return await OpenAsync([settings.Bootstrap],context.DnsEndPoint.Port,ct);
             return await OpenSystemAsync(context.DnsEndPoint,ct);
         };
@@ -47,9 +74,32 @@ public static class NetworkTransport {
             var destination = context.InitialRequestMessage.RequestUri!;
             if (!host.Equals(origin.IdnHost,StringComparison.OrdinalIgnoreCase) || UsesProxy(destination,proxy)
                 || LocalHost(host) || IPAddress.TryParse(host,out _)) return await OpenSystemAsync(context.DnsEndPoint,ct);
+
+            // When SystemFallback is enabled in real network mode, prefer fast OS/TUN resolution first
+            // so blocked overseas DoH bootstrap IPs (like 1.1.1.1/8.8.8.8) never add 6s stalls per request.
+            if (settings.SystemFallback && dnsHandler is null) {
+                try {
+                    return await OpenSystemAsync(context.DnsEndPoint, ct);
+                } catch (Exception sysErr) when (!ct.IsCancellationRequested && sysErr is SocketException or IOException) {
+                    // System DNS failed; fall through to DoH rescue below.
+                }
+            }
+
+            if (settings.SystemFallback && dnsHandler is null && dohFastBypass.TryGetValue(settings.Endpoint.Host, out var until) && until > DateTimeOffset.UtcNow) {
+                return await OpenSystemAsync(context.DnsEndPoint, ct);
+            }
+
             IPAddress[] addresses;
-            try { addresses = await resolver.ResolveAsync(host,ct); }
-            catch (Exception e) when (settings.SystemFallback && !ct.IsCancellationRequested && e is HttpRequestException or IOException or JsonException or OperationCanceledException) {
+            try {
+                if (settings.SystemFallback && dnsHandler is null) {
+                    using var quick = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    quick.CancelAfter(TimeSpan.FromMilliseconds(1500));
+                    addresses = await resolver.ResolveAsync(host, quick.Token);
+                } else {
+                    addresses = await resolver.ResolveAsync(host, ct);
+                }
+            } catch (Exception e) when (settings.SystemFallback && !ct.IsCancellationRequested && e is HttpRequestException or IOException or JsonException or OperationCanceledException) {
+                dohFastBypass[settings.Endpoint.Host] = DateTimeOffset.UtcNow.AddMinutes(10);
                 return await OpenSystemAsync(context.DnsEndPoint,ct);
             }
             // Fall back only on DNS failure, never replay an HTTP request or retry after TLS/auth failures.
@@ -63,8 +113,9 @@ public static class NetworkTransport {
         catch { socket.Dispose(); throw; }
     }
     private static async ValueTask<Stream> OpenAsync(IPAddress[] addresses,int port,CancellationToken ct) {
+        var ordered = addresses.OrderBy(a => a.AddressFamily == AddressFamily.InterNetwork ? 0 : 1).ToArray();
         var socket = new Socket(SocketType.Stream,ProtocolType.Tcp) { NoDelay=true };
-        try { await socket.ConnectAsync(addresses,port,ct); return new NetworkStream(socket,true); }
+        try { await socket.ConnectAsync(ordered,port,ct); return new NetworkStream(socket,true); }
         catch { socket.Dispose(); throw; }
     }
     private sealed class OwnedTransport(HttpMessageHandler inner,DohResolver resolver) : DelegatingHandler(inner) {

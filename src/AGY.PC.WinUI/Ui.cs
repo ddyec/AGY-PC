@@ -77,6 +77,28 @@ internal static class Ui {
         Child = new SymbolIcon(symbol)
     };
 
+    public static FontIcon FluentGlyph(string glyph, double size = 14) => new() {
+        Glyph = glyph,
+        FontSize = size,
+        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center
+    };
+
+    public static Border NavIconBadge(string glyph, double boxSize = 26, double iconSize = 13.5) {
+        var badge = Surface(
+            FluentGlyph(glyph, iconSize),
+            "LayerFillColorAltBrush",
+            new Thickness(0),
+            7,
+            false);
+        badge.Width = boxSize;
+        badge.Height = boxSize;
+        badge.HorizontalAlignment = HorizontalAlignment.Center;
+        badge.VerticalAlignment = VerticalAlignment.Center;
+        return badge;
+    }
+
     public static Button Action(string label, Symbol symbol, Action click, bool accent = false) {
         var button = Button(label, click, accent);
         var icon = Glyph(symbol, 15);
