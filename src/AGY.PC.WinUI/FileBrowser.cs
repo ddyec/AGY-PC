@@ -149,7 +149,7 @@ internal sealed class FileBrowser {
             row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
 
             var iconBox = Ui.Surface(
-                new SymbolIcon(entry.Directory ? Symbol.Folder : Symbol.Document) { Width = 16, Height = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+                Ui.Glyph(entry.Directory ? Symbol.Folder : Symbol.Document, 16),
                 "LayerFillColorAltBrush",
                 new Thickness(0),
                 8);

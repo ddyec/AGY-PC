@@ -5,6 +5,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     private GatewayClient? client;
     private CancellationTokenSource? watch;
     private int generation;
+    private bool draining;
     private string scope = "";
     private ProfileState profile = new();
     private readonly Func<Credentials,GatewayClient>? factory;
@@ -21,6 +22,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public TaskSettings Settings { get; private set; } = new("","","review","plan","");
     public PendingSend? Pending => profile.Pending;
     public Draft Draft => profile.Drafts.GetValueOrDefault(Selected?.Id ?? "new") ?? new("",[]);
+    public IReadOnlyList<QueuedMessage> Queue => profile.Queues.GetValueOrDefault(Selected?.Id ?? "new") is { } list ? list : [];
     public string ConnectionLabel { get; private set; } = "尚未连接";
     public string? Notice { get; private set; }
     public string Presentation => profile.Presentation;
@@ -126,19 +128,156 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         await VerifyProfileAsync();
         if (Settings.ApprovalMode == "legacy") throw new InvalidOperationException("请先选择审批策略。");
         var draft = Draft;
+        var queued = profile.Queues.GetValueOrDefault("new");
         Selected = await Api.JsonAsync<Session>("sessions",HttpMethod.Post,ConfigBody(Settings));
-        profile.Drafts[Selected.Id] = draft; profile.Drafts.Remove("new"); Save(); Publish();
+        profile.Drafts[Selected.Id] = draft; profile.Drafts.Remove("new");
+        if (queued is { Count: > 0 }) { profile.Queues[Selected.Id] = queued; profile.Queues.Remove("new"); }
+        Save(); Publish();
         await ReloadAsync(); return Selected.Id;
     }
     public async Task SendAsync() {
         if (Pending is not null || Selected?.Running == true) throw new InvalidOperationException("请先结束当前任务或核对待确认发送。");
         var draft = Draft;
-        if (string.IsNullOrWhiteSpace(draft.Text) && draft.References.Length == 0) return;
+        if (string.IsNullOrWhiteSpace(draft.Text) && draft.References.Length == 0) {
+            if (Queue.Count > 0) await DrainQueueAsync();
+            return;
+        }
         await VerifyProfileAsync();
         var sid = await EnsureSessionAsync();
         profile.Pending = new(sid,Guid.NewGuid().ToString(),draft.Text,[],draft.References);
         Save(); // A failed durable write MUST prevent the network send.
         await SubmitPendingAsync();
+    }
+    public async Task EnqueueAsync() {
+        if (Pending is not null) throw new InvalidOperationException("请先核对待确认发送。");
+        var draft = Draft;
+        if (string.IsNullOrWhiteSpace(draft.Text) && draft.References.Length == 0) return;
+        var key = Selected?.Id ?? "new";
+        if (!profile.Queues.TryGetValue(key, out var list)) {
+            list = [];
+            profile.Queues[key] = list;
+        }
+        list.Add(new(Guid.NewGuid().ToString(), draft.Text, draft.References, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        profile.Drafts[key] = new("", []);
+        Save();
+        Publish();
+        if (Selected?.Running != true && Pending is null) {
+            await DrainQueueAsync();
+        }
+    }
+    public void RemoveQueued(string id) {
+        var key = Selected?.Id ?? "new";
+        if (!profile.Queues.TryGetValue(key, out var list)) return;
+        list.RemoveAll(q => q.Id == id);
+        if (list.Count == 0) profile.Queues.Remove(key);
+        Save();
+        Publish();
+    }
+    public void EditQueued(string id) {
+        var key = Selected?.Id ?? "new";
+        if (!profile.Queues.TryGetValue(key, out var list)) return;
+        var item = list.FirstOrDefault(q => q.Id == id);
+        if (item is null) return;
+        list.RemoveAll(q => q.Id == id);
+        if (list.Count == 0) profile.Queues.Remove(key);
+        var current = Draft;
+        var mergedText = string.IsNullOrWhiteSpace(current.Text) ? item.Text : item.Text + "\n" + current.Text;
+        var mergedRefs = item.References.Concat(current.References.Where(r => !item.References.Any(ir => ir.Path == r.Path))).Take(8).ToArray();
+        profile.Drafts[key] = new(mergedText, mergedRefs);
+        Save();
+        Publish();
+    }
+    public async Task DrainQueueAsync() {
+        if (draining || Pending is not null || Selected?.Running == true) return;
+        var key = Selected?.Id ?? "new";
+        if (!profile.Queues.TryGetValue(key, out var initial) || initial.Count == 0) return;
+        draining = true;
+        try {
+            await VerifyProfileAsync();
+            var sid = await EnsureSessionAsync();
+            if (!profile.Queues.TryGetValue(sid, out var list) || list.Count == 0) return;
+            var next = list[0];
+            list.RemoveAt(0);
+            if (list.Count == 0) profile.Queues.Remove(sid);
+            profile.Pending = new(sid, next.Id, next.Text, [], next.References);
+            Save();
+            Publish();
+            await SubmitPendingAsync();
+        } finally {
+            draining = false;
+        }
+    }
+    public async Task SteerNowAsync(string? queuedId = null) {
+        if (Pending is not null) throw new InvalidOperationException("请先核对待确认发送。");
+        string text;
+        Reference[] references;
+        string requestId;
+        var key = Selected?.Id ?? "new";
+        var clearedDraft = false;
+        var originalDraft = Draft;
+        if (queuedId is not null) {
+            if (!profile.Queues.TryGetValue(key, out var list) || list.FirstOrDefault(q => q.Id == queuedId) is not { } item)
+                return;
+            list.RemoveAll(q => q.Id == queuedId);
+            if (list.Count == 0) profile.Queues.Remove(key);
+            text = item.Text;
+            references = item.References;
+            requestId = item.Id;
+            Save();
+            Publish();
+        } else if (!string.IsNullOrWhiteSpace(originalDraft.Text) || originalDraft.References.Length > 0) {
+            text = originalDraft.Text;
+            references = originalDraft.References;
+            requestId = Guid.NewGuid().ToString();
+            profile.Drafts[key] = new("", []);
+            clearedDraft = true;
+            Save();
+            Publish();
+        } else if (profile.Queues.TryGetValue(key, out var list) && list.Count > 0) {
+            var item = list[0];
+            list.RemoveAt(0);
+            if (list.Count == 0) profile.Queues.Remove(key);
+            text = item.Text;
+            references = item.References;
+            requestId = item.Id;
+            Save();
+            Publish();
+        } else {
+            return;
+        }
+
+        try {
+            await VerifyProfileAsync();
+            var sid = await EnsureSessionAsync();
+            watch?.Cancel();
+            if (Selected?.Running == true) {
+                ConnectionLabel = "正在打断并立即引导…";
+                Publish();
+                var stopped = await Api.JsonAsync<Session>($"sessions/{GatewayClient.Id(sid)}/stop", HttpMethod.Post, new { });
+                for (var i = 0; i < 25 && stopped.Running; i++) {
+                    await Task.Delay(120);
+                    stopped = await Api.JsonAsync<Session>($"sessions/{GatewayClient.Id(sid)}");
+                }
+                Selected = stopped;
+            }
+            profile.Pending = new(sid, requestId, text, [], references);
+            Save();
+            for (var attempt = 0; ; attempt++) {
+                try {
+                    await SubmitPendingAsync();
+                    break;
+                } catch (GatewayException ex) when (ex.Status == 409 && attempt < 20) {
+                    await Task.Delay(150);
+                }
+            }
+        } catch {
+            if (clearedDraft && Pending is null) {
+                profile.Drafts[Selected?.Id ?? key] = originalDraft;
+                Save();
+                Publish();
+            }
+            throw;
+        }
     }
     public async Task SubmitPendingAsync() {
         var pending = Pending ?? throw new InvalidOperationException("没有待确认发送。");
@@ -173,9 +312,18 @@ public sealed class Workspace(IStateStore store) : IDisposable {
                     Selected = snapshot; Reconcile(snapshot);
                     ConnectionLabel = snapshot.Approvals?.Length > 0 ? "等待审批" : snapshot.Running ? "AGY 正在工作" : "已就绪";
                     Notice = null; Publish();
+                    if (!snapshot.Running && (snapshot.Approvals?.Length ?? 0) == 0 && string.IsNullOrEmpty(snapshot.Error) && Pending is null && profile.Queues.TryGetValue(sid, out var ready) && ready.Count > 0)
+                        break;
                 }
                 failures = 0;
-                if (Selected?.Running != true) { await ReloadAsync(); return; }
+                if (Selected?.Running != true) {
+                    if (!ct.IsCancellationRequested && epoch == generation && Selected?.Id == sid && (Selected.Approvals?.Length ?? 0) == 0 && string.IsNullOrEmpty(Selected.Error) && Pending is null && profile.Queues.TryGetValue(sid, out var queued) && queued.Count > 0) {
+                        await DrainQueueAsync();
+                        return;
+                    }
+                    await ReloadAsync();
+                    return;
+                }
             } catch (Exception error) {
                 if (ct.IsCancellationRequested || epoch != generation) return;
                 failures++; ConnectionLabel = "连接中断，正在重连";
@@ -187,6 +335,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     }
     public async Task StopAsync() {
         if (Selected is not { } s) return;
+        watch?.Cancel();
         await VerifyProfileAsync(); await Api.JsonAsync<Session>($"sessions/{GatewayClient.Id(s.Id)}/stop",HttpMethod.Post,new { }); await SelectAsync(s.Id);
     }
     public async Task AnswerAsync(Approval approval, bool allow) {
@@ -232,7 +381,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public async Task DeleteAsync(Session session) {
         if (Pending?.SessionID == session.Id) throw new InvalidOperationException("这条会话还有待确认发送，不能删除。");
         await VerifyProfileAsync(); await Api.JsonAsync<System.Text.Json.JsonElement>($"sessions/{GatewayClient.Id(session.Id)}",HttpMethod.Delete);
-        profile.Drafts.Remove(session.Id); Save(); if (Selected?.Id == session.Id) NewConversation(); await ReloadAsync();
+        profile.Drafts.Remove(session.Id); profile.Queues.Remove(session.Id); Save(); if (Selected?.Id == session.Id) NewConversation(); await ReloadAsync();
     }
     public void Disconnect() { watch?.Cancel(); client?.Dispose(); client = null; Status = null; Selected = null; ++generation; state.Connection = null; Save(); scope = ""; profile = new(); Publish(); }
     public void Dispose() { watch?.Cancel(); watch?.Dispose(); client?.Dispose(); }

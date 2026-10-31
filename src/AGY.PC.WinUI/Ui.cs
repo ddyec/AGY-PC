@@ -69,9 +69,17 @@ internal static class Ui {
         return panel;
     }
 
+    public static Viewbox Glyph(Symbol symbol, double size = 15) => new() {
+        Width = size,
+        Height = size,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new SymbolIcon(symbol)
+    };
+
     public static Button Action(string label, Symbol symbol, Action click, bool accent = false) {
         var button = Button(label, click, accent);
-        var icon = new SymbolIcon(symbol) { Width = 15, Height = 15, VerticalAlignment = VerticalAlignment.Center };
+        var icon = Glyph(symbol, 15);
         var text = Text(label, 13);
         text.FontWeight = new() { Weight = 500 };
         button.Content = Inline(icon, text);
@@ -88,7 +96,7 @@ internal static class Ui {
         var text = Text(label, 12.5);
         text.TextWrapping = TextWrapping.NoWrap;
         if (symbol is { } s) {
-            var icon = new SymbolIcon(s) { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center };
+            var icon = Glyph(s, 14);
             button.Content = Inline(icon, text);
         } else {
             button.Content = text;
@@ -100,7 +108,7 @@ internal static class Ui {
 
     public static Button StarterCard(Symbol symbol, string title, string subtitle, Action click) {
         var iconBadge = Surface(
-            new SymbolIcon(symbol) { Width = 16, Height = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+            Glyph(symbol, 16),
             "LayerFillColorAltBrush",
             new Thickness(0),
             8);
@@ -130,7 +138,7 @@ internal static class Ui {
 
     public static Button Icon(Symbol symbol, string label, Action click) {
         var button = Button(label, click);
-        button.Content = new SymbolIcon(symbol) { Width = 15, Height = 15, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        button.Content = Glyph(symbol, 15);
         button.Width = 34;
         button.Height = 34;
         button.MinWidth = 34;
@@ -144,8 +152,11 @@ internal static class Ui {
         return button;
     }
 
+    public static string Sanitize(string? value) =>
+        string.IsNullOrEmpty(value) ? "" : value.Replace("\uFFFC", "").Replace("\uFFFD", "");
+
     public static TextBlock Text(string value, double size = 14) => new() {
-        Text = value,
+        Text = Sanitize(value),
         FontSize = size,
         TextWrapping = TextWrapping.Wrap,
         IsTextSelectionEnabled = false

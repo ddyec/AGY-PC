@@ -22,6 +22,7 @@ internal sealed class DesktopShell {
     private readonly TextBlock pageName = Ui.Title("对话", 16);
     private readonly TextBlock chatHeading;
     private readonly Button policyButton;
+    private readonly UIElement? presentationControl;
     private bool changing, narrow;
     internal string Page { get; private set; } = "chat";
     internal event Action<string>? Navigated;
@@ -34,8 +35,10 @@ internal sealed class DesktopShell {
         TextBlock taskSummary,
         Action newChat,
         Action chooseProject,
-        Action openTaskOptions) {
+        Action openTaskOptions,
+        UIElement? chatPresentationControl = null) {
         chatHeading = heading;
+        presentationControl = chatPresentationControl;
         chatHeading.FontSize = 16;
         chatHeading.FontWeight = new() { Weight = 600 };
         chatHeading.TextWrapping = TextWrapping.NoWrap;
@@ -76,7 +79,7 @@ internal sealed class DesktopShell {
         createContent.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         createContent.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var plusBadge = Ui.Surface(
-            new SymbolIcon(Symbol.Add) { Width = 13, Height = 13, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+            Ui.Glyph(Symbol.Add, 13),
             "LayerFillColorAltBrush",
             new Thickness(0),
             6,
@@ -110,7 +113,7 @@ internal sealed class DesktopShell {
             ("build", "混合构建", Symbol.Repair),
             ("settings", "配置与额度", Symbol.Setting)
         }) {
-            var icon = new SymbolIcon(item.Item3) { Width = 16, Height = 16 };
+            var icon = Ui.Glyph(item.Item3, 16);
             var label = Ui.Text(item.Item2, 13.5);
             var row = Ui.Inline(icon, label);
             row.Spacing = 10;
@@ -145,7 +148,7 @@ internal sealed class DesktopShell {
             "<Grid Padding='6,7' ColumnSpacing='8'>" +
             "<Grid.ColumnDefinitions><ColumnDefinition Width='Auto'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>" +
             "<Border Width='6' Height='6' CornerRadius='3' Background='{ThemeResource TextFillColorTertiaryBrush}' VerticalAlignment='Center' Opacity='0.65'/>" +
-            "<TextBlock Grid.Column='1' Text='{Binding Name}' FontSize='13' TextWrapping='NoWrap' TextTrimming='CharacterEllipsis' VerticalAlignment='Center' ToolTipService.ToolTip='{Binding Name}'/>" +
+            "<TextBlock Grid.Column='1' Text='{Binding DisplayName}' FontSize='13' TextWrapping='NoWrap' TextTrimming='CharacterEllipsis' VerticalAlignment='Center' ToolTipService.ToolTip='{Binding DisplayName}'/>" +
             "</Grid></DataTemplate>");
         Grid.SetRow(history, 4);
         paneGrid.Children.Add(history);
@@ -202,14 +205,16 @@ internal sealed class DesktopShell {
         policyButton.CornerRadius = new CornerRadius(6);
         ToolTipService.SetToolTip(policyButton, "点击配置模型、思考强度与审批策略");
 
-        var titleStack = Ui.Inline(chatHeading, pageName, policyButton);
+        var titleStack = presentationControl is not null
+            ? Ui.Inline(chatHeading, pageName, policyButton, presentationControl)
+            : Ui.Inline(chatHeading, pageName, policyButton);
         titleStack.Spacing = 10;
         Grid.SetColumn(titleStack, 1);
         top.Children.Add(titleStack);
 
         location.FontWeight = new() { Weight = 500 };
         var projectBtn = Ui.Button("项目", chooseProject);
-        projectBtn.Content = Ui.Inline(new SymbolIcon(Symbol.Folder) { Width = 14, Height = 14 }, location);
+        projectBtn.Content = Ui.Inline(Ui.Glyph(Symbol.Folder, 14), location);
         projectBtn.MinHeight = 32;
         projectBtn.Height = 32;
         projectBtn.Padding = new Thickness(11, 5, 11, 5);
@@ -243,6 +248,7 @@ internal sealed class DesktopShell {
         var isChat = page == "chat";
         chatHeading.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
         policyButton.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
+        if (presentationControl is not null) presentationControl.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
         pageName.Visibility = isChat ? Visibility.Collapsed : Visibility.Visible;
         pageName.Text = page switch {
             "files" => "文件与产物",

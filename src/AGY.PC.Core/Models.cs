@@ -24,26 +24,58 @@ public sealed record ModelReply(ModelInfo[] Models, ModelFamily[] Families);
 public sealed record SessionsReply(Session[] Sessions);
 public sealed record Attachment(string Id, string Name, string Mime, long Size, string? Path);
 public sealed record ToolCall(string Id, string Name, string State, JsonElement Parameters, string Output, bool? IsError);
-public sealed record ResponseStep(int Index, string Text);
+public sealed record ResponseStep(int Index, string Text, string? Thinking = null);
 public sealed record ChatMessage(string Id, string Role, string Text, Attachment[]? Attachments, ToolCall[]? Tools, ResponseStep[]? Steps);
 public sealed record Approval(string Id, string SessionID, string Tool, JsonElement Parameters, double CreatedAt, double ExpiresAt);
 public sealed record Session(string Id, string Name, string Cwd, string Model, string Mode, double Modified, bool Running,
     string ConversationID, string Error, int Revision, ChatMessage[]? Messages, string? BaseModel, string? Effort, string? ApprovalMode, Approval[]? Approvals) {
-    public override string ToString() => Name;
+    public string DisplayName => FileRules.CleanText(Name) is { Length: > 0 } cleaned ? cleaned : "新会话";
+    public override string ToString() => DisplayName;
 }
 public sealed record FileEntry(string Name, string Path, bool Directory, long Size, double Modified) {
     public string Label => (Directory ? "📁  " : "📄  ") + Name;
 }
 public sealed record FileListing(string Root, string Path, FileEntry[] Entries);
-public sealed record LimitReply(double FetchedAt, string Source, LimitGroup[] Groups);
-public sealed record LimitGroup(string Name, string? Description, LimitBucket[] Buckets);
-public sealed record LimitBucket(string Id, string Name,
+public sealed record LimitReply(double FetchedAt, string Source, LimitGroup[] Groups, string? Description = null);
+public sealed record LimitGroup(string Name, string? Description, LimitBucket[] Buckets) {
+    public string DisplayName => Name switch {
+        "Gemini Models" => "Gemini 系列模型",
+        "Claude and GPT models" => "Claude 与 GPT 系列模型",
+        "Tab Models" => "Tab 代码补全模型",
+        _ => Name
+    };
+    public string? DisplayDescription => Description switch {
+        "Quota usage is shared across all Gemini models" => "所有 Gemini 模型共享此额度池",
+        "Quota usage is shared across all Claude and GPT models" => "所有 Claude 与 GPT 模型共享此额度池",
+        "Quota usage is shared across all Tab models" => "所有 Tab 补全模型共享此额度池",
+        _ => Description
+    };
+}
+public sealed record LimitBucket(
+    string Id,
+    string Name,
     [property: JsonPropertyName("remaining_fraction")] double? Remaining,
     [property: JsonPropertyName("reset_time")] string? Reset,
-    string? Window);
+    string? Window,
+    string? Description = null) {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; init; }
+    public double? EffectiveRemaining => Remaining ?? (Extra is not null && (Extra.TryGetValue("remaining", out var r) || Extra.TryGetValue("remainingFraction", out r)) && r.ValueKind == JsonValueKind.Number ? r.GetDouble() : null);
+    public string? EffectiveReset => !string.IsNullOrWhiteSpace(Reset) ? Reset : (Extra is not null && (Extra.TryGetValue("reset", out var s) || Extra.TryGetValue("resetTime", out s)) && s.ValueKind == JsonValueKind.String ? s.GetString() : null);
+    public string DisplayTitle => Window switch {
+        "5h" => "5 小时可用额度",
+        "weekly" => "每周可用额度",
+        _ => Name switch {
+            "Weekly Limit Remaining" => "每周可用额度",
+            "Five Hour Limit Remaining" => "5 小时可用额度",
+            _ => Name
+        }
+    };
+}
 public sealed record Reference(string Path, string Label, bool Directory);
 public sealed record PendingSend(string SessionID, string RequestID, string Text, string[] Attachments, Reference[] References);
 public sealed record Draft(string Text, Reference[] References);
+public sealed record QueuedMessage(string Id, string Text, Reference[] References, double CreatedAt);
 public sealed record TaskSettings(string Model, string Effort, string ApprovalMode, string Mode, string Workspace) {
     public TaskSettings Validate(ModelFamily[] families, string[] roots, string defaultModel) {
         var family = families.FirstOrDefault(f => f.Id == Model)
@@ -63,6 +95,7 @@ public sealed class ProfileState {
     public BuildPlan? Build { get; set; }
     public PendingSend? Pending { get; set; }
     public Dictionary<string, Draft> Drafts { get; set; } = [];
+    public Dictionary<string, List<QueuedMessage>> Queues { get; set; } = [];
 }
 public sealed class AppState {
     public NetworkSettings Network { get; set; } = new();
@@ -71,6 +104,13 @@ public sealed class AppState {
 }
 public static class FileRules {
     public const long MaxFile = 25L * 1024 * 1024;
+    public static string CleanText(string? value) =>
+        string.IsNullOrEmpty(value) ? "" : value.Replace("\uFFFC", "").Replace("\uFFFD", "").Trim();
+    public static string PresentationLabel(string value) => value switch {
+        "步骤摘要" => "步骤摘要 · 思考过程",
+        "结论优先" => "结论优先 · 折叠过程",
+        _ => "原版 · 全部内容"
+    };
     public static bool Within(string path, string root) => path.StartsWith('/') && !path.Split('/').Contains("..")
         && (path.TrimEnd('/') == root.TrimEnd('/') || path.StartsWith(root.TrimEnd('/') + "/", StringComparison.Ordinal));
     public static string Label(string scope, string folder, string name, bool directory) =>

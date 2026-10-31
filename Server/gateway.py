@@ -331,9 +331,17 @@ class Gateway:
                     parts = m.setdefault("steps", [])
                     item = next((v for v in parts if v["index"] == idx), None)
                     if item is None:
-                        item = {"index": idx, "text": ""}; parts.append(item)
-                    item["text"] += step.get("text_delta", "")
-                    m["text"] = item["text"]
+                        item = {"index": idx, "text": "", "thinking": ""}; parts.append(item)
+                    if step.get("text_delta"):
+                        item["text"] += step.get("text_delta", "")
+                    elif step.get("text") and not item["text"]:
+                        item["text"] = step["text"]
+                    if step.get("thinking_delta"):
+                        item["thinking"] = item.get("thinking", "") + step["thinking_delta"]
+                    elif step.get("thinking") and not item.get("thinking"):
+                        item["thinking"] = step["thinking"]
+                    if item["text"].strip():
+                        m["text"] = item["text"]
                 if step.get("step_type") == "tool":
                     # Tool events may carry ACTIVE followed by DONE: replace by step identity.
                     info = step.get("tool_info", {})
@@ -345,6 +353,11 @@ class Gateway:
                 result = event.get("result", {})
                 if result.get("response"):
                     m["text"] = result["response"]
+                elif not m.get("text"):
+                    for step_item in reversed(m.get("steps", [])):
+                        if step_item.get("text", "").strip():
+                            m["text"] = step_item["text"]
+                            break
                 m["usage"] = result.get("usage", {})
                 s["error"] = result.get("error", "")
                 if result.get("status") != "SUCCESS" and not s["error"]:

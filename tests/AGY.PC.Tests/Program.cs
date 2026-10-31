@@ -188,6 +188,42 @@ static class Program {
                 await Throws<HttpRequestException>(()=>client.GetAsync(uri));var headers=await server.WaitAsync(TimeSpan.FromSeconds(5));Assert(headers.StartsWith("CONNECT gateway.test:443 ")&&dns.Calls==0,"proxy owns destination DNS");
             }finally{listener.Stop();}
         });
+        Test("Quota limits deserialize remaining_fraction and reset_time and localize titles",()=>{
+            var json="{\"fetchedAt\":1730000000,\"source\":\"agy_usage_json\",\"groups\":[{\"name\":\"Gemini Models\",\"description\":\"Quota usage is shared across all Gemini models\",\"buckets\":[{\"id\":\"gemini-weekly\",\"name\":\"Weekly Limit Remaining\",\"window\":\"weekly\",\"remaining_fraction\":0.9655538,\"reset_time\":\"2026-11-05T12:40:20Z\"},{\"id\":\"gemini-5h\",\"name\":\"Five Hour Limit Remaining\",\"window\":\"5h\",\"remaining_fraction\":1.0,\"reset_time\":\"2026-10-31T17:40:20Z\"}]}]}";
+            var reply=JsonSerializer.Deserialize<LimitReply>(json,Wire.Json)!;
+            var group=reply.Groups[0];
+            Assert(group.DisplayName=="Gemini 系列模型"&&group.Buckets.Length==2,"group parsed");
+            Assert(group.Buckets[0].EffectiveRemaining is >0.96 and <0.97 && group.Buckets[0].EffectiveReset=="2026-11-05T12:40:20Z" && group.Buckets[0].DisplayTitle=="每周可用额度","weekly bucket");
+            Assert(group.Buckets[1].EffectiveRemaining==1.0 && group.Buckets[1].DisplayTitle=="5 小时可用额度","5h bucket");
+        });
+        Test("Display text cleaning strips U+FFFC object replacement characters",()=>{
+            var s=new Session(Sid,"http://github.com/ddyec/AGY-PC \uFFFC\uFFFC修一下","/work","gemini-low","plan",0,false,"","",1,[],"gemini","low","review",[]);
+            Assert(!s.DisplayName.Contains('\uFFFC')&&s.ToString()=="http://github.com/ddyec/AGY-PC 修一下","cleaned session title");
+        });
+        await Test("Conversation queue holds follow-up messages while running and drains in order",async()=>{
+            var store=new MemoryStore();var fake=new Fake{StartRunning=true,RunOnSubmit=true};
+            using var work=new Workspace(store,_=>new(Creds,fake));
+            await work.ConnectAsync(Creds);await work.SelectAsync(Sid);
+            Assert(work.Selected!.Running,"initially running");
+            work.UpdateDraft("第一条排队指令");await work.EnqueueAsync();
+            work.UpdateDraft("第二条排队指令");await work.EnqueueAsync();
+            Assert(work.Queue.Count==2&&work.Draft.Text==""&&fake.Submissions==0,"queued while running");
+            var secondId=work.Queue[1].Id;work.EditQueued(secondId);
+            Assert(work.Queue.Count==1&&work.Draft.Text=="第二条排队指令","edit pops back to draft");
+            await work.EnqueueAsync();Assert(work.Queue.Count==2,"re-queued");
+            fake.SetRunning(false);await work.SelectAsync(Sid);
+            await work.DrainQueueAsync();
+            Assert(fake.Submissions==1&&work.Queue.Count==1,"first queued drained");
+        });
+        await Test("Immediate steer stops active run and dispatches guiding message immediately",async()=>{
+            var store=new MemoryStore();var fake=new Fake{StartRunning=true};
+            using var work=new Workspace(store,_=>new(Creds,fake));
+            await work.ConnectAsync(Creds);await work.SelectAsync(Sid);
+            Assert(work.Selected!.Running,"running before steer");
+            work.UpdateDraft("立即改变方向：直接修改 UI");
+            await work.SteerNowAsync();
+            Assert(fake.Stops==1&&fake.Submissions==1&&work.Pending is null&&work.Draft.Text=="","stopped and steered in one step");
+        });
         Console.WriteLine($"{passed} meaningful checks passed.");
     }
     sealed class DnsFake:HttpMessageHandler {
@@ -210,10 +246,12 @@ static class Program {
     }
     sealed class Fake:HttpMessageHandler {
         public static readonly byte[] Binary=[0,255,1,127,0];
-        public int Error,Calls,Submissions;public string Profile="A";public bool LoseBeforeAdmission,LoseAfterAdmission,OldTurbo;
+        public int Error,Calls,Submissions,Stops;public string Profile="A";public bool LoseBeforeAdmission,LoseAfterAdmission,OldTurbo,StartRunning,RunOnSubmit;
         public byte[]? UploadBytes;public string? LastAuthorization,LastBody,LastRequestID;public string[] LastReferences=[];
         private Session snapshot=new(Sid,"old history","/work","gemini-low","plan",0,false,"","",1,[],"gemini","low","review",[]);
+        public void SetRunning(bool running)=>snapshot=snapshot with{Running=running,Revision=snapshot.Revision+1};
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){
+            if(StartRunning){StartRunning=false;snapshot=snapshot with{Running=true};}
             Calls++;LastAuthorization=request.Headers.Authorization?.ToString();var path=request.RequestUri!.AbsolutePath;
             if(Error!=0)return new((HttpStatusCode)Error){Content=new StringContent("failure")};
             object value;
@@ -225,11 +263,12 @@ static class Program {
             else if(path.Contains("/approvals/")){LastBody=await request.Content!.ReadAsStringAsync(ct);value=snapshot;}
             else if(path.EndsWith("/workspace"))value=new FileListing("/work/project","",[]);
             else if(path.EndsWith("/files"))return new(HttpStatusCode.OK){Content=new ByteArrayContent(Binary)};
+            else if(path.EndsWith("/stop")){Stops++;snapshot=snapshot with{Running=false,Revision=snapshot.Revision+1};value=snapshot;}
             else if(path.EndsWith("/events")){var content=new StringContent("data: "+JsonSerializer.Serialize(snapshot,Wire.Json)+"\n\n",Encoding.UTF8,"text/event-stream");return new(HttpStatusCode.OK){Content=content};}
             else if(path.EndsWith("/messages")){
                 LastBody=await request.Content!.ReadAsStringAsync(ct);using var doc=JsonDocument.Parse(LastBody);LastRequestID=doc.RootElement.GetProperty("requestID").GetString();LastReferences=doc.RootElement.TryGetProperty("references",out var refs)?refs.Deserialize<string[]>()!:[];
                 if(LoseBeforeAdmission)throw new HttpRequestException("disconnected before admission");
-                if(snapshot.Messages?.Any(m=>m.Id==LastRequestID)!=true){Submissions++;snapshot=snapshot with{Revision=snapshot.Revision+1,Messages=[new(LastRequestID!,"user",doc.RootElement.GetProperty("text").GetString()??"",[],[],[])]};}
+                if(snapshot.Messages?.Any(m=>m.Id==LastRequestID)!=true){Submissions++;snapshot=snapshot with{Running=RunOnSubmit,Revision=snapshot.Revision+1,Messages=[new(LastRequestID!,"user",doc.RootElement.GetProperty("text").GetString()??"",[],[],[])]};}
                 if(LoseAfterAdmission){LoseAfterAdmission=false;throw new HttpRequestException("lost response");}value=snapshot;
             }else if(path.EndsWith("/sessions")){value=request.Method==HttpMethod.Post?snapshot:new SessionsReply([snapshot]);}
             else value=OldTurbo?snapshot with{ApprovalMode="turbo",Mode="accept-edits"}:snapshot;
