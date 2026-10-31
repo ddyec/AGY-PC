@@ -1,4 +1,4 @@
-﻿param([ValidateSet('win-x64','win-arm64')][string]$Runtime='win-x64')
+param([ValidateSet('win-x64','win-arm64')][string]$Runtime='win-x64')
 $ErrorActionPreference='Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'WinUI 的完整构建需要 Windows，不能在 WSL / Linux 中执行。' }
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -21,7 +21,7 @@ foreach ($image in @('login-light.png','login-dark.png','workspace-dark.png','co
 Copy-Item README.md "$output/使用说明.md" -Force
 Copy-Item THIRD_PARTY_NOTICES.md $output -Force
 Copy-Item docs/licenses -Destination $output -Recurse -Force
-$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.5-$Runtime.zip"
+$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.6-$Runtime.zip"
 if (Test-Path $archive) { Remove-Item $archive }
 Compress-Archive -Path "$output/*" -DestinationPath $archive
 Write-Host "Windows 构建完成：$archive"

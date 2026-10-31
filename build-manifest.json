@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0-beta.5",
+  "version": "2.0.0-beta.6",
   "uiFramework": "WinUI 3",
   "windowsAppSDK": "2.6.4",
   "dotnetSDK": "10.0.403",
@@ -14,9 +14,9 @@
   "actionsRun": false,
   "realModelTasksSent": 0,
   "productionGateway": "idle restart; project snapshot enabled; same account/key/tunnel",
-  "createdUTC": "2026-10-31T12:00:16.354711+00:00",
-  "builderExeSHA256": "6a72347405e06c6cbaf8faeb0daa6c13f75399c327b192200ac9c4c0bb46e161",
-  "lastFix": "Rebuilt actual desktop shell, chat composer, file browser and grouped settings/build UI",
+  "createdUTC": "2026-10-31T12:22:08.049866+00:00",
+  "builderExeSHA256": "0fac5e9e8a7bc2dd747a1e721e25c49f9ffc6c7568f15998b43c4ffe48d259f0",
+  "lastFix": "Unified workspace top bar, centered 3-card welcome hero, seamless composer toolbar and refined sidebar/pages",
   "resourceGraph": {
     "before": {
       "Assets/AGY.ico": 2,
@@ -32,6 +32,6 @@
     ],
     "duplicateGuardInjection": "rejected"
   },
-  "windowsStartupConfirmed": "beta.4 user screenshot shows connected WinUI client; beta.5 pending",
-  "coreTestsRerun": false
+  "windowsStartupConfirmed": "beta.5 user screenshot shows connected WinUI workspace; beta.6 visual polish pending Windows run",
+  "coreTestsRerun": true
 }

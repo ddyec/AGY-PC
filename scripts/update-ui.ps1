@@ -1,4 +1,4 @@
-﻿param([string]$BuildDirectory)
+param([string]$BuildDirectory)
 $ErrorActionPreference='Stop'
 try {
     if ($env:OS -ne 'Windows_NT') { throw '请在 Windows 中运行。' }
@@ -32,7 +32,7 @@ try {
     }
     $cached=Join-Path $env:LOCALAPPDATA 'AGY-PC\BuildTools\dotnet-10.0.403\dotnet.exe'
     $dotnet=if (Test-Path -LiteralPath $cached) { $cached } else { (Get-Command dotnet -ErrorAction Stop).Source }
-    $output=Join-Path $BuildDirectory 'AGY-PC-WinUI-Beta5'
+    $output=Join-Path $BuildDirectory 'AGY-PC-WinUI-Beta6'
     $diagnostics=Join-Path $BuildDirectory 'startup-diagnostics'
     $collector=Join-Path $project 'scripts\collect-winui-diagnostics.ps1'
     Push-Location $project

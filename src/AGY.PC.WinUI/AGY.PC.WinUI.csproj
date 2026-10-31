@@ -17,7 +17,7 @@
     <Platforms>x64;ARM64</Platforms>
     <AssemblyName>AGY-PC</AssemblyName>
     <RootNamespace>AGY.PC.WinUI</RootNamespace>
-    <Version>2.0.0-beta.5</Version>
+    <Version>2.0.0-beta.6</Version>
     <ApplicationIcon>Assets/AGY.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PublishTrimmed>false</PublishTrimmed>
