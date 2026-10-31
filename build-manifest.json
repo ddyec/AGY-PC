@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "createdUTC": "2026-10-31T09:23:53.198134+00:00",
+  "sdk": "10.0.403",
+  "runtime": "10.0.14",
+  "target": "win-x64",
+  "crossCompiled": true,
+  "windowsExecutionVerified": false,
+  "testsPassed": 19,
+  "liveReadOnlyGatewayCheck": true,
+  "realModelTasksSent": false,
+  "actionsRun": false,
+  "pushed": false,
+  "exeSHA256": "26ab1082142b3ddf1f6b0e73ed1a995097f30e38e623bd07cb62c72f7b2025cc",
+  "windowsSubsystem": "GUI",
+  "finalPublish": "success"
+}
