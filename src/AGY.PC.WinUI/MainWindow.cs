@@ -1102,7 +1102,7 @@ internal sealed class MainWindow : Window {
             Text = current.ProxyUrl ?? "",
             CornerRadius = new CornerRadius(8)
         };
-        var enable = new ToggleSwitch { Header = "加密 DNS（DoH，仅在无 HTTP 代理直连时生效）", IsOn = current.UseDoh, OnContent = "启用 DoH 辅助解析", OffContent = "仅使用系统 DNS（零延迟）" };
+        var enable = new ToggleSwitch { Header = "加密 DNS（DoH，支持标准 RFC 8484 Wireformat 与 JSON）", IsOn = current.UseDoh, OnContent = "优先使用 DoH 解析（支持优选 IP）", OffContent = "仅使用系统 DNS" };
         var provider = new ComboBox {
             Header = "DoH 服务商",
             ItemsSource = new[] { "AliDNS", "DNSPod", "Cloudflare", "Google", "Custom" },
@@ -1111,12 +1111,12 @@ internal sealed class MainWindow : Window {
             CornerRadius = new CornerRadius(8)
         };
         var customUrl = new TextBox {
-            Header = "自定义 DoH 地址（可选，支持自由指定 https://...）",
-            PlaceholderText = "https://dns.alidns.com/dns-query",
+            Header = "自定义 DoH 地址（可选，如浏览器同款 DoH / Cloudflare 优选 DoH）",
+            PlaceholderText = "如 https://edge.1molchuan.top/linuxdo 或 https://dns.alidns.com/dns-query",
             Text = current.CustomUrl ?? "",
             CornerRadius = new CornerRadius(8)
         };
-        var fallback = new CheckBox { Content = "优先使用系统缓存 DNS，失败时再回退 DoH（彻底避免境外 DoH 节点超时卡顿）", IsChecked = current.SystemFallback };
+        var fallback = new CheckBox { Content = "当 DoH 服务器不可达时自动回退至系统 DNS（正常情况下始终优先采用 DoH 解析结果）", IsChecked = current.SystemFallback };
         void SyncNetControls() {
             provider.IsEnabled = customUrl.IsEnabled = fallback.IsEnabled = enable.IsOn;
         }

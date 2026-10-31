@@ -16,7 +16,7 @@ static class Program {
         if(args.Length==2 && args[0]=="--live-readonly-key-file") {
             var sw=System.Diagnostics.Stopwatch.StartNew();
             var credentials=Credentials.Validate("https://agy.yectech.uk",File.ReadAllText(args[1]).Trim());
-            using var api=new GatewayClient(credentials);
+            using var api=new GatewayClient(credentials, network: new(true, "Custom", false, "https://edge.1molchuan.top/linuxdo"));
             var t0=sw.ElapsedMilliseconds;
             var status=await api.JsonAsync<GatewayStatus>("status");
             var t1=sw.ElapsedMilliseconds;
@@ -30,7 +30,7 @@ static class Program {
             var t5=sw.ElapsedMilliseconds;
             var limits=await api.JsonAsync<LimitReply>("limits");
             var t6=sw.ElapsedMilliseconds;
-            Console.WriteLine($"Live timings: status={t1-t0}ms; models={t2-t1}ms; sessions={t3-t2}ms; bigSession({bigSession.Messages?.Length} msgs)={t4-t3}ms; workspace={t5-t4}ms; limits={t6-t5}ms");
+            Console.WriteLine($"Live timings (via https://edge.1molchuan.top/linuxdo with SystemFallback=false): status={t1-t0}ms; models={t2-t1}ms; sessions={t3-t2}ms; bigSession({bigSession.Messages?.Length} msgs)={t4-t3}ms; workspace={t5-t4}ms; limits={t6-t5}ms");
             Console.WriteLine($"Live read-only: status OK; models={models.Models.Length}; families={models.Families.Length}; quotaGroups={limits.Groups.Length}; fileBrowser={status.Capabilities.FileBrowser}; entries={files.Entries.Length}");
             return;
         }
@@ -238,7 +238,7 @@ static class Program {
         await Test("Free specification of custom model ID, workspace path, custom DoH URL, FlClash proxy and custom skills persist across restarts",async()=>{
             var store=new MemoryStore();var fake=new Fake();
             using(var work=new Workspace(store,_=>new(Creds,fake))){
-                work.SetNetwork(new(true,"Custom",true,"https://dns.alidns.com/dns-query","http://127.0.0.1:7890"));
+                work.SetNetwork(new(true,"Custom",true,"https://edge.1molchuan.top/linuxdo","http://127.0.0.1:7890"));
                 await work.ConnectAsync(Creds);
                 await work.ConfigureAsync(new("claude-sonnet-4-5-custom","xhigh","turbo","accept-edits","subproject/app"));
                 Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.Workspace=="/work/subproject/app","custom model and relative workspace normalized");
@@ -248,12 +248,26 @@ static class Program {
                 Assert(work.Draft.Text.Contains("请审查当前 UI 设计：")&&work.Draft.References.Any(r=>r.Path=="/work/subproject/app/.agents/skills/ui/SKILL.md"),"skill applied with reference");
             }
             using(var work=new Workspace(store,_=>new(Creds,fake))){
-                Assert(work.Network.CustomUrl=="https://dns.alidns.com/dns-query"&&work.Network.ProxyUrl=="http://127.0.0.1:7890","custom DoH URL and FlClash proxy persisted");
+                Assert(work.Network.CustomUrl=="https://edge.1molchuan.top/linuxdo"&&work.Network.ProxyUrl=="http://127.0.0.1:7890","custom DoH URL and FlClash proxy persisted");
                 work.SetNetwork(new(false,"Cloudflare",true,null,"direct"));
                 Assert(work.Network.ProxyUrl=="direct","direct proxy override accepted");
                 await work.ConnectAsync(Creds);
                 Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.ApprovalMode=="turbo"&&work.CustomSkills.Count==1,"custom model and skills remembered across restart");
             }
+        });
+        await Test("RFC 8484 wireformat DoH query and compressed response parsing work for standard browser DoH endpoints",async()=>{
+            var query=DohResolver.BuildDnsWireQuery("agy.yectech.uk",1);
+            Assert(query.Length>16&&query[2]==1&&query[5]==1,"valid RFC 8484 wire query packet");
+            var responsePacket=new byte[]{
+                0x00,0x00,0x81,0x80,0x00,0x01,0x00,0x02,0x00,0x00,0x00,0x00,
+                0x03,(byte)'a',(byte)'g',(byte)'y',0x07,(byte)'y',(byte)'e',(byte)'c',(byte)'t',(byte)'e',(byte)'c',(byte)'h',0x02,(byte)'u',(byte)'k',0x00,
+                0x00,0x01,0x00,0x01,
+                0xC0,0x0C,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x48,0x00,0x04,162,159,150,47,
+                0xC0,0x0C,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x3C,0x00,0x04,162,159,139,152
+            };
+            var parsed=DohResolver.ParseDnsWireResponse(responsePacket,1);
+            Assert(parsed.Success&&parsed.Addresses.Length==2&&parsed.Addresses[0].ToString()=="162.159.150.47"&&parsed.Ttl==60,"parsed compressed wireformat A records");
+            await Task.CompletedTask;
         });
         Console.WriteLine($"{passed} meaningful checks passed.");
     }
