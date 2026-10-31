@@ -65,6 +65,7 @@ public sealed class ProfileState {
     public Dictionary<string, Draft> Drafts { get; set; } = [];
 }
 public sealed class AppState {
+    public NetworkSettings Network { get; set; } = new();
     public Credentials? Connection { get; set; }
     public Dictionary<string, ProfileState> Profiles { get; set; } = [];
 }

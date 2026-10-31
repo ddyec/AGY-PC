@@ -130,7 +130,77 @@ static class Program {
         Test("Native Windows crash exit codes retain their original hexadecimal identity",()=>{
             var result=StartupChecks.ExitDescription(-1073741189);Assert(result.Contains("0xC000027B")&&result.Contains("原始异常"),"stowed exception is not misdiagnosed as compilation");
         });
+        Test("DoH preferences persist before login; old state receives safe defaults",()=>{
+            var store=new MemoryStore();using(var workspace=new Workspace(store))workspace.SetNetwork(new(false,"Google",false));
+            using var restored=new Workspace(store);Assert(restored.Network==new NetworkSettings(false,"Google",false),"network persisted before profile");
+            var old=JsonSerializer.Deserialize<AppState>("{}",Wire.Json)!;Assert(old.Network.UseDoh&&old.Network.SystemFallback,"migration defaults");
+            Throws<InvalidOperationException>(()=>new NetworkSettings(Provider:"untrusted").Validate());
+        });
+        await Test("DoH queries A and AAAA without credentials, caches and preserves Unicode domains",async()=>{
+            var fake=new DnsFake();using var resolver=new DohResolver(new("https://dns.example.test/query"),fake);
+            var first=await resolver.ResolveAsync("例子.test");var second=await resolver.ResolveAsync("例子.test");
+            Assert(first.Length==2&&second.Length==2&&fake.Calls==2,"dual stack cached");Assert(fake.SafeRequests&&fake.LastQuery!.Contains("xn--"),"no auth, IDN encoded");
+        });
+        await Test("DoH accepts one available family but refuses NXDOMAIN, empty and malformed data",async()=>{
+            var fake=new DnsFake{FailV6=true};using(var resolver=new DohResolver(new("https://dns.example.test/query"),fake))Assert((await resolver.ResolveAsync("example.test")).Length==1,"IPv4 works without IPv6");
+            foreach(var body in new[]{"{\"Status\":3}","{\"Status\":0,\"Answer\":[]}","invalid","{\"Status\":0,\"TC\":true}","{\"Status\":0,\"Answer\":[{\"type\":1,\"TTL\":60,\"data\":\"not-an-IP\"}]}",new string('x',65537)}){
+                using var resolver=new DohResolver(new("https://dns.example.test/query"),new DnsFake{Body=body});await Throws<IOException>(()=>resolver.ResolveAsync("example.test"));
+            }
+        });
+        await Test("DoH zero TTL does not cache; cancellation does not trigger fallback",async()=>{
+            var fake=new DnsFake{Ttl=0};using var resolver=new DohResolver(new("https://dns.example.test/query"),fake);await resolver.ResolveAsync("example.test");await resolver.ResolveAsync("example.test");Assert(fake.Calls==4,"TTL zero queried again");
+            using var cancel=new CancellationTokenSource();cancel.Cancel();await Throws<OperationCanceledException>(()=>resolver.ResolveAsync("other.test",cancel.Token));
+        });
+        Test("Proxy routing retains proxy DNS, including bypass rules",()=>{
+            var destination=new Uri("https://gateway.test");Assert(!NetworkTransport.UsesProxy(destination,new WebProxy()),"direct");
+            Assert(NetworkTransport.UsesProxy(destination,new WebProxy("http://proxy.test:8080")),"proxy owns lookup");
+            var bypass=new WebProxy("http://proxy.test:8080"){BypassList=["gateway\\.test"]};Assert(!NetworkTransport.UsesProxy(destination,bypass),"proxy bypass direct");
+        });
+        await Test("Real DoH socket connection retains HTTP host and keeps bearer out of DNS",async()=>{
+            var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
+            try{
+                var port=((IPEndPoint)listener.LocalEndpoint).Port;var uri=new Uri($"http://gateway.test:{port}/v1/status");var fake=new DnsFake{Loopback=true};
+                using var client=new HttpClient(NetworkTransport.Create(uri,new(SystemFallback:false),fake,new WebProxy())){Timeout=TimeSpan.FromSeconds(5)};
+                var server=Task.Run(async()=>{using var connection=await listener.AcceptTcpClientAsync();using var stream=connection.GetStream();using var reader=new StreamReader(stream,Encoding.ASCII,leaveOpen:true);var lines=new List<string>();string? line;while(!string.IsNullOrEmpty(line=await reader.ReadLineAsync()))lines.Add(line);await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"));return string.Join("\n",lines);});
+                using var request=new HttpRequestMessage(HttpMethod.Get,uri);request.Headers.Authorization=new("Bearer","gateway-only-secret");using var response=await client.SendAsync(request);
+                var headers=await server;Assert(response.IsSuccessStatusCode&&headers.Contains($"Host: gateway.test:{port}")&&headers.Contains("Bearer gateway-only-secret"),"original host and auth reach gateway");Assert(fake.Calls==2&&fake.SafeRequests,"DoH isolated");
+            }finally{listener.Stop();}
+        });
+        await Test("DoH HTTPS retains original SNI and refuses an untrusted server certificate",async()=>{
+            using var rsa=System.Security.Cryptography.RSA.Create(2048);
+            var certificateRequest=new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=gateway.test",rsa,System.Security.Cryptography.HashAlgorithmName.SHA256,System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            var names=new System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder();names.AddDnsName("gateway.test");certificateRequest.CertificateExtensions.Add(names.Build());
+            using var certificate=certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1),DateTimeOffset.UtcNow.AddDays(1));
+            var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();string? sni=null;
+            try{
+                var port=((IPEndPoint)listener.LocalEndpoint).Port;var uri=new Uri($"https://gateway.test:{port}/v1/status");
+                var server=Task.Run(async()=>{using var connection=await listener.AcceptTcpClientAsync();using var ssl=new System.Net.Security.SslStream(connection.GetStream());try{await ssl.AuthenticateAsServerAsync(new System.Net.Security.SslServerAuthenticationOptions{ServerCertificateSelectionCallback=(_,name)=>{sni=name;return certificate;}});}catch(Exception e)when(e is System.Security.Authentication.AuthenticationException or IOException){} });
+                using var client=new HttpClient(NetworkTransport.Create(uri,new(SystemFallback:false),new DnsFake{Loopback=true},new WebProxy())){Timeout=TimeSpan.FromSeconds(5)};
+                await Throws<HttpRequestException>(()=>client.GetAsync(uri));await server.WaitAsync(TimeSpan.FromSeconds(5));Assert(sni=="gateway.test","TLS SNI remains original domain; no trust bypass");
+            }finally{listener.Stop();}
+        });
+        await Test("HTTPS proxy receives the original CONNECT hostname without a DoH lookup",async()=>{
+            var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
+            try{
+                var port=((IPEndPoint)listener.LocalEndpoint).Port;var uri=new Uri("https://gateway.test/v1/status");var dns=new DnsFake();
+                var server=Task.Run(async()=>{using var connection=await listener.AcceptTcpClientAsync();using var stream=connection.GetStream();using var reader=new StreamReader(stream,Encoding.ASCII,leaveOpen:true);var lines=new List<string>();string? line;while(!string.IsNullOrEmpty(line=await reader.ReadLineAsync()))lines.Add(line);await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));return string.Join("\n",lines);});
+                using var client=new HttpClient(NetworkTransport.Create(uri,new(SystemFallback:false),dns,new WebProxy($"http://127.0.0.1:{port}"))){Timeout=TimeSpan.FromSeconds(5)};
+                await Throws<HttpRequestException>(()=>client.GetAsync(uri));var headers=await server.WaitAsync(TimeSpan.FromSeconds(5));Assert(headers.StartsWith("CONNECT gateway.test:443 ")&&dns.Calls==0,"proxy owns destination DNS");
+            }finally{listener.Stop();}
+        });
         Console.WriteLine($"{passed} meaningful checks passed.");
+    }
+    sealed class DnsFake:HttpMessageHandler {
+        public int Calls,Ttl=60;public bool FailV6,Loopback;public bool SafeRequests=true;public string? Body,LastQuery;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct) {
+            ct.ThrowIfCancellationRequested();Interlocked.Increment(ref Calls);LastQuery=request.RequestUri!.Query;
+            SafeRequests &= request.Headers.Authorization is null && !request.Headers.Contains("Cookie") && request.Headers.Accept.ToString()=="application/dns-json";
+            var type=request.RequestUri.Query.EndsWith("type=28")?28:1;
+            if(FailV6&&type==28)return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            var ip=type==1?(Loopback?"127.0.0.1":"192.0.2.1"):"2001:db8::1";
+            var body=Body??JsonSerializer.Serialize(new{Status=0,Answer=new[]{new{type,TTL=Ttl,data=ip}}});
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(body,Encoding.UTF8,"application/dns-json")});
+        }
     }
     sealed class MemoryStore:IStateStore {
         private byte[]? data;

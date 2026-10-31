@@ -10,9 +10,9 @@ public sealed class GatewayException(int status, string message) : Exception(mes
 public sealed class GatewayClient : IDisposable {
     private readonly HttpClient http;
     private readonly Credentials credentials;
-    public GatewayClient(Credentials credentials, HttpMessageHandler? handler = null) {
+    public GatewayClient(Credentials credentials, HttpMessageHandler? handler = null, NetworkSettings? network = null) {
         this.credentials = Credentials.Validate(credentials.Address, credentials.Token);
-        http = new(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, Credentials = null }) { Timeout = Timeout.InfiniteTimeSpan };
+        http = new(handler ?? NetworkTransport.Create(new Uri(this.credentials.Address), network ?? new())) { Timeout = Timeout.InfiniteTimeSpan };
     }
     private HttpRequestMessage Request(string path, HttpMethod method, Dictionary<string,string>? query = null) {
         var uri = credentials.Address + "/v1/" + path;

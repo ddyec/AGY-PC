@@ -21,7 +21,7 @@ foreach ($image in @('login-light.png','login-dark.png','report.json')) {
 Copy-Item README.md "$output/使用说明.md" -Force
 Copy-Item THIRD_PARTY_NOTICES.md $output -Force
 Copy-Item docs/licenses -Destination $output -Recurse -Force
-$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.3-$Runtime.zip"
+$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.4-$Runtime.zip"
 if (Test-Path $archive) { Remove-Item $archive }
 Compress-Archive -Path "$output/*" -DestinationPath $archive
 Write-Host "Windows 构建完成：$archive"

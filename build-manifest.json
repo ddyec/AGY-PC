@@ -1,22 +1,22 @@
 {
-  "version": "2.0.0-beta.3",
+  "version": "2.0.0-beta.4",
   "uiFramework": "WinUI 3",
   "windowsAppSDK": "2.6.4",
   "dotnetSDK": "10.0.403",
-  "coreTestsPassed": 24,
+  "coreTestsPassed": 32,
   "gatewayTestsPassed": 23,
-  "winuiManagedCompile": "beta.3 requires Windows XAML generation; not completed on Linux",
-  "fullWindowsWinUIPublish": "beta.2 confirmed passed in user Windows log; beta.3 pending rerun",
-  "windowsUiScreenshots": "not generated on this Linux server",
+  "winuiManagedCompile": "beta.4 C# type check passed; generated XAML contract stub used only in temporary check harness",
+  "fullWindowsWinUIPublish": "beta.4 pending Windows execution",
+  "windowsUiScreenshots": "beta.4 Windows check asserts title bar properties; root PNG excludes native caption",
   "builderCrossCompiled": "win-x64",
   "releaseAssetKind": "Windows build entry, not a prebuilt WinUI client",
   "projectSnapshotPublicHTTP": 200,
   "actionsRun": false,
   "realModelTasksSent": 0,
   "productionGateway": "idle restart; project snapshot enabled; same account/key/tunnel",
-  "createdUTC": "2026-10-31T11:12:26.562275+00:00",
-  "builderExeSHA256": "0d0ce31ff251aa9643478643b3d3b0d2e5a74d1f944de20e1184e53483999452",
-  "lastFix": "Standard App.xaml initialization, payload validation and startup diagnostics",
+  "createdUTC": "2026-10-31T11:35:12.338907+00:00",
+  "builderExeSHA256": "1243ea41c2a0a7269be9cda498fd7597eb5adf678d9fedde39f5701bf30cef36",
+  "lastFix": "Native title bar theme synchronization and persistent, proxy-aware DoH",
   "resourceGraph": {
     "before": {
       "Assets/AGY.ico": 2,
@@ -32,5 +32,5 @@
     ],
     "duplicateGuardInjection": "rejected"
   },
-  "windowsStartupConfirmed": false
+  "windowsStartupConfirmed": "beta.3 user screenshot shows running login window"
 }

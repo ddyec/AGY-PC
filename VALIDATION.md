@@ -1,3 +1,16 @@
+# 2.0.0-beta.4 · 标题栏与 DoH
+
+- 用户提供的 beta.3 Windows 实机截图显示 WinUI 登录界面已经启动。本版修复其标题栏保持浅色的问题：正文 ActualTheme 变化时同步 PreferredTheme、标题/按钮颜色及非活动状态；高对比度使用系统默认。
+- DoH 应用于整个 GatewayClient：状态、模型、额度、会话、流式消息、上传和下载；HTTPS URI/SNI/证书验证不变。Cloudflare/Google 默认 IP 引导不需要系统 DNS，HTTP 代理连接由代理解析，局域网名称不使用公共 DoH。
+- **32 项核心检查通过**。新增覆盖：登录前偏好持久化、旧状态迁移、A/AAAA、IDN、缓存、TTL=0、NXDOMAIN/畸形/超大响应、取消、代理与绕过规则、真实回环 HTTP 连接的 Host/凭据隔离、HTTPS 原始 SNI 与不受信任证书拒绝、真实代理 CONNECT 不进行目标 DoH 查询。
+- WinUI C# 类型编译通过，使用临时生成契约占位仅作类型检查，未把占位打包；不代表 Windows XAML/PRI 完整构建通过。PowerShell 脚本通过微软解析器检查；Windows 构建入口交叉编译完成。
+- Windows UI 检查新增浅色/深色标题栏颜色属性断言。RenderTargetBitmap 截图只包括正文，不包括原生标题栏；报告明确标注此限制。
+- 本版 Windows 原生构建、实际标题栏像素和公网 DoH 在用户网络下的效果仍需用户 Windows 运行更新包验证。回环测试使用隔离 DNS 响应，未读取登录密钥、未发送模型任务；不声称已在 Windows 上验收。本次没有运行 Actions，也未修改后端和账号。
+
+参考：[微软标题栏 API](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.windowing.appwindowtitlebar)、[Cloudflare DoH](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/)、[Google DNS JSON API](https://developers.google.com/speed/public-dns/docs/doh/json)。
+
+---
+
 # 2.0.0-beta.3 · 启动入口与诊断
 
 - 用户 Windows 日志确认 beta.2 已完成 publish，随后启动退出 -1073741189（0xC000027B）。这说明是启动故障；该状态码不能唯一确定 XAML、资源、环境中的哪一处异常。

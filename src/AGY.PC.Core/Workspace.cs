@@ -7,10 +7,12 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     private int generation;
     private string scope = "";
     private ProfileState profile = new();
-    private readonly Func<Credentials,GatewayClient> factory = c => new(c);
+    private readonly Func<Credentials,GatewayClient>? factory;
     public Workspace(IStateStore store, Func<Credentials,GatewayClient> factory) : this(store) { this.factory = factory; }
     public event Action? Changed;
     public Credentials? SavedConnection => state.Connection;
+    public NetworkSettings Network => state.Network;
+    public void SetNetwork(NetworkSettings settings) { settings.Validate(); state.Network=settings; Save(); }
     public bool Connected => client is not null && Status is not null;
     public GatewayStatus? Status { get; private set; }
     public ModelFamily[] Families { get; private set; } = [];
@@ -33,7 +35,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public async Task ConnectAsync(Credentials credentials) {
         var epoch = ++generation;
         watch?.Cancel(); client?.Dispose(); client = null; Status = null; Selected = null; Sessions = [];
-        var candidate = factory(credentials);
+        var candidate = factory is null ? new GatewayClient(credentials, network: state.Network) : factory(credentials);
         try {
             var status = await candidate.JsonAsync<GatewayStatus>("status");
             var models = await candidate.JsonAsync<ModelReply>("models");
