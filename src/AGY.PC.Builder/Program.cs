@@ -43,7 +43,7 @@ internal static class Program {
             File.WriteAllText(Path.Combine(output,"windows-build-report.json"),JsonSerializer.Serialize(new{builtOnWindows=true,uiCaptureCompleted=true,visualReviewStillRequired=true,sdk="10.0.403",buildID=Path.GetFileName(LogFolder),exeSHA256=Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(exe)))},Wire.Json));
             foreach(var name in new[]{"README.md","THIRD_PARTY_NOTICES.md"})File.Copy(Path.Combine(project,name),Path.Combine(output,name),true);
             var licenses=Path.Combine(output,"licenses");Directory.CreateDirectory(licenses);foreach(var license in Directory.GetFiles(Path.Combine(project,"docs","licenses")))File.Copy(license,Path.Combine(licenses,Path.GetFileName(license)),true);
-            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.6-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
+            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.8-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
             Say("编译和截图生成完成。截图需要人工确认，不等同于全部交互验收。");Say("运行目录："+output);Say("运行包："+archive);Say("构建日志："+Path.Combine(LogFolder,"build.log"));
             Process.Start(new ProcessStartInfo("explorer.exe",screenshots){UseShellExecute=true});
             Process.Start(new ProcessStartInfo(exe){UseShellExecute=true,WorkingDirectory=output});return 0;

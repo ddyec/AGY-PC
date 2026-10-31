@@ -66,8 +66,9 @@ internal sealed class MainWindow : Window {
     private readonly StackPanel customSkillsHost = new() { Spacing = 8 }, workspaceSkillsHost = new() { Spacing = 8 };
     private AgySkillItem[] discoveredSkills = [];
     private readonly bool uiCheck;
-    private bool busy, rendering, following = true, mentionOpen, loadingSession;
+    private bool busy, rendering, following = true, mentionOpen, loadingSession, pendingMessageRender;
     private int sessionLoadEpoch;
+    private DateTimeOffset lastMessageRenderAt;
     private Session[] currentHistoryItems = [];
     private string signature = "", session = "";
     private readonly UIElement login, chat, skillsPage, settings;
@@ -1043,8 +1044,21 @@ internal sealed class MainWindow : Window {
 
             var key = (work.Selected?.Id ?? "new") + ":" + (work.Selected?.Revision ?? 0) + ":" + (work.Selected?.Running == true ? "run" : "idle") + ":" + work.Presentation + ":" + (loadingSession ? "loading" : "ready");
             if (signature != key) {
-                signature = key;
-                RenderMessages();
+                var now = DateTimeOffset.UtcNow;
+                var sessionChanged = session != (work.Selected?.Id ?? "new");
+                if (!sessionChanged && work.Selected?.Running == true && (now - lastMessageRenderAt).TotalMilliseconds < 240) {
+                    if (!pendingMessageRender) {
+                        pendingMessageRender = true;
+                        _ = Task.Delay(250).ContinueWith(_ => DispatcherQueue.TryEnqueue(() => {
+                            pendingMessageRender = false;
+                            Render();
+                        }));
+                    }
+                } else {
+                    signature = key;
+                    lastMessageRenderAt = now;
+                    RenderMessages();
+                }
             }
             History();
             history.IsEnabled = true;
@@ -1082,7 +1096,13 @@ internal sealed class MainWindow : Window {
 
     private async Task NetworkSettingsAsync() {
         var current = work.Network;
-        var enable = new ToggleSwitch { Header = "加密 DNS（DoH）", IsOn = current.UseDoh, OnContent = "启用 DoH 辅助解析", OffContent = "仅使用系统 / 代理 DNS（零延迟）" };
+        var proxyBox = new TextBox {
+            Header = "HTTP 代理策略（留空自动跟随系统代理如 FlClash，填 direct 强制直连，或指定 http://127.0.0.1:7890）",
+            PlaceholderText = "留空自动跟随系统代理 / direct / http://127.0.0.1:7890",
+            Text = current.ProxyUrl ?? "",
+            CornerRadius = new CornerRadius(8)
+        };
+        var enable = new ToggleSwitch { Header = "加密 DNS（DoH，仅在无 HTTP 代理直连时生效）", IsOn = current.UseDoh, OnContent = "启用 DoH 辅助解析", OffContent = "仅使用系统 DNS（零延迟）" };
         var provider = new ComboBox {
             Header = "DoH 服务商",
             ItemsSource = new[] { "AliDNS", "DNSPod", "Cloudflare", "Google", "Custom" },
@@ -1096,7 +1116,7 @@ internal sealed class MainWindow : Window {
             Text = current.CustomUrl ?? "",
             CornerRadius = new CornerRadius(8)
         };
-        var fallback = new CheckBox { Content = "优先使用系统 / TUN 缓存 DNS，失败时再回退 DoH（彻底避免境外 DoH 节点超时卡顿）", IsChecked = current.SystemFallback };
+        var fallback = new CheckBox { Content = "优先使用系统缓存 DNS，失败时再回退 DoH（彻底避免境外 DoH 节点超时卡顿）", IsChecked = current.SystemFallback };
         void SyncNetControls() {
             provider.IsEnabled = customUrl.IsEnabled = fallback.IsEnabled = enable.IsOn;
         }
@@ -1104,21 +1124,23 @@ internal sealed class MainWindow : Window {
         enable.Toggled += (_, _) => SyncNetControls();
         var dialog = new ContentDialog {
             XamlRoot = root.XamlRoot,
-            Title = "网络链路与 DNS 设置",
+            Title = "网络链路、FlClash 代理与 DNS 设置",
             PrimaryButtonText = work.Connected ? "保存并重新连接" : "保存",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
             Content = Ui.Stack(
+                proxyBox,
                 enable,
                 provider,
                 customUrl,
                 fallback,
-                Ui.Caption("提示：若在国内网络或开启 Clash / Mihomo TUN 模式下感觉点击操作有数秒延迟，建议开启「优先使用系统 / TUN 缓存 DNS」或直接切换至 AliDNS / 仅系统 DNS。"))
+                Ui.Caption("提示：若使用 FlClash 系统代理模式，保持上方代理框留空即可自动走系统代理，或直接填入 FlClash 端口（如 http://127.0.0.1:7890）；若服务器支持直连且不想经过代理，可填入 direct。"))
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         var selectedProvider = provider.SelectedItem as string ?? "Cloudflare";
         var customUrlText = string.IsNullOrWhiteSpace(customUrl.Text) ? null : customUrl.Text.Trim();
-        work.SetNetwork(new(enable.IsOn, selectedProvider, fallback.IsChecked == true, customUrlText));
+        var proxyUrlText = string.IsNullOrWhiteSpace(proxyBox.Text) ? null : proxyBox.Text.Trim();
+        work.SetNetwork(new(enable.IsOn, selectedProvider, fallback.IsChecked == true, customUrlText, proxyUrlText));
         if (work.Connected && work.SavedConnection is { } saved) await work.ConnectAsync(saved);
     }
 
@@ -1202,6 +1224,35 @@ internal sealed class MainWindow : Window {
         return stack;
     }
 
+    private static Expander LazyExpander(string header, Func<UIElement> contentFactory, int radius = 8) {
+        var host = new Border();
+        var loaded = false;
+        var expander = new Expander {
+            Header = header,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(radius),
+            Content = host
+        };
+        expander.Expanding += (_, _) => {
+            if (loaded) return;
+            loaded = true;
+            host.Child = contentFactory();
+        };
+        return expander;
+    }
+
+    private UIElement RenderProcessItem((int Order, string Kind, string Title, string RawText, Func<UIElement> ContentFactory) item) {
+        if (item.Kind == "thinking") {
+            var thinkHeader = Ui.SectionLabel("💡 " + item.Title);
+            return Ui.Surface(Ui.Stack(thinkHeader, item.ContentFactory()), "LayerFillColorAltBrush", new Thickness(12, 10, 12, 10), 10);
+        }
+        if (item.Kind == "step") {
+            return Ui.Surface(item.ContentFactory(), "LayerFillColorAltBrush", new Thickness(12, 10, 12, 10), 10);
+        }
+        return LazyExpander(item.Title, item.ContentFactory, 8);
+    }
+
     private void RenderMessages() {
         var id = work.Selected?.Id ?? "new";
         if (session != id) { session = id; following = true; }
@@ -1221,24 +1272,27 @@ internal sealed class MainWindow : Window {
                 if (fallbackStep is not null) cleanMessageText = FileRules.CleanText(fallbackStep.Text);
             }
 
-            var processItems = new List<(int Order, string Kind, string Title, string RawText, UIElement Content)>();
+            var processItems = new List<(int Order, string Kind, string Title, string RawText, Func<UIElement> ContentFactory)>();
             if (message.Role != "user") {
                 foreach (var step in message.Steps ?? []) {
                     var cleanThinking = FileRules.CleanText(step.Thinking);
                     if (cleanThinking.Length > 0) {
                         var summary = SummarizeLine(cleanThinking, "思考分析");
-                        processItems.Add((step.Index * 2, "thinking", "思考过程 · " + summary, cleanThinking, MessageText(cleanThinking)));
+                        var capturedThinking = cleanThinking;
+                        processItems.Add((step.Index * 2, "thinking", "思考过程 · " + summary, capturedThinking, () => MessageText(capturedThinking)));
                     }
                     var cleanStepText = FileRules.CleanText(step.Text);
                     if (cleanStepText.Length > 0 && cleanStepText != cleanMessageText) {
                         var summary = SummarizeLine(cleanStepText, "中间进展");
-                        processItems.Add((step.Index * 2 + 1, "step", "阶段进展 · " + summary, cleanStepText, MessageText(cleanStepText)));
+                        var capturedStep = cleanStepText;
+                        processItems.Add((step.Index * 2 + 1, "step", "阶段进展 · " + summary, capturedStep, () => MessageText(capturedStep)));
                     }
                 }
                 foreach (var tool in message.Tools ?? []) {
                     var order = int.TryParse(tool.Id, out var parsed) ? parsed * 2 + 1 : 9000;
                     var title = DescribeTool(tool);
-                    processItems.Add((order, "tool", title, "", RenderToolDetails(tool)));
+                    var capturedTool = tool;
+                    processItems.Add((order, "tool", title, "", () => RenderToolDetails(capturedTool)));
                 }
                 processItems.Sort((a, b) => a.Order.CompareTo(b.Order));
             }
@@ -1289,25 +1343,25 @@ internal sealed class MainWindow : Window {
             if (message.Role == "user") {
                 if (cleanMessageText.Length > 0) panel.Children.Add(MessageText(cleanMessageText));
             } else if (work.Presentation == "原版") {
-                // 原版：完整按时间顺序展示所有思考过程、中间步骤、工具调用与最终回答
+                // 原版：完整按时间顺序展示所有思考过程、中间步骤、工具调用与最终回答（对超长多步对话自动折叠早期步骤以防 UI 卡顿）
                 if (processItems.Count > 0) {
                     var fullProcess = Ui.Stack();
                     fullProcess.Spacing = 8;
-                    foreach (var item in processItems) {
-                        if (item.Kind == "thinking") {
-                            var thinkHeader = Ui.SectionLabel("💡 " + item.Title);
-                            fullProcess.Children.Add(Ui.Surface(Ui.Stack(thinkHeader, item.Content), "LayerFillColorAltBrush", new Thickness(12, 10, 12, 10), 10));
-                        } else if (item.Kind == "step") {
-                            fullProcess.Children.Add(Ui.Surface(item.Content, "LayerFillColorAltBrush", new Thickness(12, 10, 12, 10), 10));
-                        } else {
-                            fullProcess.Children.Add(new Expander {
-                                Header = item.Title,
-                                HorizontalAlignment = HorizontalAlignment.Stretch,
-                                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                                CornerRadius = new CornerRadius(8),
-                                Content = item.Content
-                            });
-                        }
+                    var inlineStart = processItems.Count > 10 ? processItems.Count - 6 : 0;
+                    if (inlineStart > 0) {
+                        var earlyItems = processItems.Take(inlineStart).ToArray();
+                        fullProcess.Children.Add(LazyExpander(
+                            $"展开早期 {earlyItems.Length} 个思考与工具步骤（共 {processItems.Count} 步）",
+                            () => {
+                                var earlyStack = Ui.Stack();
+                                earlyStack.Spacing = 8;
+                                foreach (var early in earlyItems) earlyStack.Children.Add(RenderProcessItem(early));
+                                return earlyStack;
+                            },
+                            8));
+                    }
+                    for (var pIdx = inlineStart; pIdx < processItems.Count; pIdx++) {
+                        fullProcess.Children.Add(RenderProcessItem(processItems[pIdx]));
                     }
                     panel.Children.Add(fullProcess);
                 }
@@ -1325,13 +1379,7 @@ internal sealed class MainWindow : Window {
                     stepTimeline.Children.Add(Ui.Caption($"思考过程与执行步骤 · 共 {processItems.Count} 步（点击展开详情）"));
                     for (var sIdx = 0; sIdx < processItems.Count; sIdx++) {
                         var item = processItems[sIdx];
-                        stepTimeline.Children.Add(new Expander {
-                            Header = $"步骤 {sIdx + 1}  ·  {item.Title}",
-                            HorizontalAlignment = HorizontalAlignment.Stretch,
-                            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                            CornerRadius = new CornerRadius(8),
-                            Content = item.Content
-                        });
+                        stepTimeline.Children.Add(LazyExpander($"步骤 {sIdx + 1}  ·  {item.Title}", item.ContentFactory, 8));
                     }
                     panel.Children.Add(stepTimeline);
                 }
@@ -1361,25 +1409,19 @@ internal sealed class MainWindow : Window {
                 }
 
                 if (processItems.Count > 0) {
-                    var folded = Ui.Stack();
-                    folded.Spacing = 6;
-                    for (var sIdx = 0; sIdx < processItems.Count; sIdx++) {
-                        var item = processItems[sIdx];
-                        folded.Children.Add(new Expander {
-                            Header = $"步骤 {sIdx + 1}  ·  {item.Title}",
-                            HorizontalAlignment = HorizontalAlignment.Stretch,
-                            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                            CornerRadius = new CornerRadius(8),
-                            Content = item.Content
-                        });
-                    }
-                    panel.Children.Add(new Expander {
-                        Header = $"查看思考过程与工具调用 · 共 {processItems.Count} 步",
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                        CornerRadius = new CornerRadius(10),
-                        Content = folded
-                    });
+                    var capturedItems = processItems.ToArray();
+                    panel.Children.Add(LazyExpander(
+                        $"查看思考过程与工具调用 · 共 {capturedItems.Length} 步",
+                        () => {
+                            var folded = Ui.Stack();
+                            folded.Spacing = 6;
+                            for (var sIdx = 0; sIdx < capturedItems.Length; sIdx++) {
+                                var item = capturedItems[sIdx];
+                                folded.Children.Add(LazyExpander($"步骤 {sIdx + 1}  ·  {item.Title}", item.ContentFactory, 8));
+                            }
+                            return folded;
+                        },
+                        10));
                 }
             }
 
@@ -1589,8 +1631,9 @@ internal sealed class MainWindow : Window {
     }
 
     private async Task LimitsAsync() {
+        var forceRefresh = false;
         while (true) {
-            var reply = await work.LimitsAsync();
+            var reply = await work.LimitsAsync(forceRefresh);
             var panel = Ui.Stack();
             panel.Spacing = 14;
             panel.MinWidth = 460;
@@ -1670,6 +1713,7 @@ internal sealed class MainWindow : Window {
 
             var result = await DialogAsync("真实账号额度", new ScrollViewer { Content = panel, MaxHeight = 520 }, "完成", "刷新额度");
             if (result != ContentDialogResult.Secondary) break;
+            forceRefresh = true;
         }
     }
 

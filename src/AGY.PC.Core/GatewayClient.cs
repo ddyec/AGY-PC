@@ -9,10 +9,20 @@ namespace AGY.PC.Core;
 public sealed class GatewayException(int status, string message) : Exception(message) { public int Status { get; } = status; }
 public sealed class GatewayClient : IDisposable {
     private readonly HttpClient http;
+    private readonly HttpClient streamHttp;
+    private readonly bool ownsStreamHttp;
     private readonly Credentials credentials;
     public GatewayClient(Credentials credentials, HttpMessageHandler? handler = null, NetworkSettings? network = null) {
         this.credentials = Credentials.Validate(credentials.Address, credentials.Token);
-        http = new(handler ?? NetworkTransport.Create(new Uri(this.credentials.Address), network ?? new())) { Timeout = Timeout.InfiniteTimeSpan };
+        var origin = new Uri(this.credentials.Address);
+        var net = network ?? new();
+        http = new(handler ?? NetworkTransport.Create(origin, net)) { Timeout = Timeout.InfiniteTimeSpan };
+        if (handler is null) {
+            streamHttp = new(NetworkTransport.Create(origin, net)) { Timeout = Timeout.InfiniteTimeSpan };
+            ownsStreamHttp = true;
+        } else {
+            streamHttp = http;
+        }
     }
     private HttpRequestMessage Request(string path, HttpMethod method, Dictionary<string,string>? query = null) {
         var uri = credentials.Address + "/v1/" + path;
@@ -85,8 +95,10 @@ public sealed class GatewayClient : IDisposable {
     public async IAsyncEnumerable<Session> EventsAsync(string sid, [EnumeratorCancellation] CancellationToken ct = default) {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(40));
         using var request = Request($"sessions/{Id(sid)}/events",HttpMethod.Get);
+        request.Version = HttpVersion.Version11;
+        request.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
         request.Headers.Accept.Clear(); request.Headers.Accept.ParseAdd("text/event-stream");
-        using var response = await http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token); await Validate(response,deadline.Token);
+        using var response = await streamHttp.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token); await Validate(response,deadline.Token);
         if (response.Content.Headers.ContentType?.MediaType != "text/event-stream") throw new InvalidDataException("服务器没有返回事件流。");
         await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
         await foreach (var data in Sse.ReadAsync(stream,deadline.Token)) {
@@ -98,7 +110,10 @@ public sealed class GatewayClient : IDisposable {
         ".png" => "image/png", ".jpg" or ".jpeg" => "image/jpeg", ".webp" => "image/webp", ".gif" => "image/gif",
         ".pdf" => "application/pdf", ".txt" or ".md" or ".csv" or ".cs" or ".py" => "text/plain", ".json" => "application/json", ".zip" => "application/zip", _ => "application/octet-stream"
     };
-    public void Dispose() => http.Dispose();
+    public void Dispose() {
+        http.Dispose();
+        if (ownsStreamHttp) streamHttp.Dispose();
+    }
 }
 public static class Sse {
     public static async IAsyncEnumerable<string> ReadAsync(Stream stream, [EnumeratorCancellation] CancellationToken ct = default) {

@@ -5,14 +5,18 @@ using System.Text.Json;
 
 namespace AGY.PC.Core;
 
-public sealed record NetworkSettings(bool UseDoh = true, string Provider = "Cloudflare", bool SystemFallback = true, string? CustomUrl = null) {
+public sealed record NetworkSettings(bool UseDoh = true, string Provider = "Cloudflare", bool SystemFallback = true, string? CustomUrl = null, string? ProxyUrl = null) {
     public void Validate() {
+        if (!string.IsNullOrWhiteSpace(ProxyUrl) && !ProxyUrl.Trim().Equals("direct", StringComparison.OrdinalIgnoreCase)) {
+            if (!Uri.TryCreate(ProxyUrl.Trim(), UriKind.Absolute, out var proxyUri) || (proxyUri.Scheme != "http" && proxyUri.Scheme != "https" && proxyUri.Scheme != "socks5"))
+                throw new InvalidOperationException("代理地址必须是有效的 http://、https://、socks5:// 地址，或填 direct 表示直连。");
+        }
         if (!string.IsNullOrWhiteSpace(CustomUrl)) {
             if (!Uri.TryCreate(CustomUrl.Trim(), UriKind.Absolute, out var custom) || custom.Scheme != "https")
                 throw new InvalidOperationException("自定义 DoH 地址必须是有效的 HTTPS URL。");
             return;
         }
-        if (Provider is not ("Cloudflare" or "Google" or "AliDNS" or "DNSPod"))
+        if (Provider is not ("Cloudflare" or "Google" or "AliDNS" or "DNSPod" or "Custom"))
             throw new InvalidOperationException("请选择有效的 DoH 服务或填写自定义 HTTPS DoH 地址。");
     }
     [System.Text.Json.Serialization.JsonIgnore]
@@ -45,37 +49,58 @@ public static class NetworkTransport {
     private static bool LocalHost(string host) => host.Equals("localhost",StringComparison.OrdinalIgnoreCase)
         || host.EndsWith(".localhost",StringComparison.OrdinalIgnoreCase) || host.EndsWith(".local",StringComparison.OrdinalIgnoreCase)
         || !host.Contains('.');
+    private static IWebProxy ResolveProxy(NetworkSettings settings, IWebProxy? explicitProxy) {
+        if (explicitProxy is not null) return explicitProxy;
+        if (!string.IsNullOrWhiteSpace(settings.ProxyUrl)) {
+            var raw = settings.ProxyUrl.Trim();
+            if (raw.Equals("direct", StringComparison.OrdinalIgnoreCase)) return new WebProxy();
+            return new WebProxy(new Uri(raw));
+        }
+        return HttpClient.DefaultProxy;
+    }
     public static HttpMessageHandler Create(Uri origin, NetworkSettings settings, HttpMessageHandler? dnsHandler=null, IWebProxy? proxy=null) {
         settings.Validate();
+        var effectiveProxy = ResolveProxy(settings, proxy);
+        var useProxy = !string.Equals(settings.ProxyUrl?.Trim(), "direct", StringComparison.OrdinalIgnoreCase);
         var transport = new SocketsHttpHandler {
             AllowAutoRedirect = false,
             UseCookies = false,
-            ConnectTimeout = TimeSpan.FromSeconds(15),
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
             PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(4),
-            EnableMultipleHttp2Connections = true
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            EnableMultipleHttp2Connections = true,
+            UseProxy = useProxy,
+            Proxy = useProxy ? effectiveProxy : null
         };
-        if (!settings.UseDoh) return transport;
-        proxy ??= HttpClient.DefaultProxy;
-        transport.Proxy=proxy;
-        var dnsTransport = new SocketsHttpHandler { AllowAutoRedirect=false, UseCookies=false, ConnectTimeout=TimeSpan.FromSeconds(2.5) };
+        if (!settings.UseDoh) {
+            transport.ConnectCallback = static (context, ct) => OpenSystemAsync(context.DnsEndPoint, ct);
+            return transport;
+        }
+        var dnsTransport = new SocketsHttpHandler {
+            AllowAutoRedirect = false,
+            UseCookies = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(2.5),
+            UseProxy = useProxy,
+            Proxy = useProxy ? effectiveProxy : null
+        };
         // Bootstrap the known resolver without depending on broken system DNS. Proxy connections remain owned by the proxy.
         dnsTransport.ConnectCallback = async (context,ct) => {
             var destination = context.InitialRequestMessage.RequestUri!;
-            if (!UsesProxy(destination,proxy) && string.IsNullOrWhiteSpace(settings.CustomUrl) && context.DnsEndPoint.Host.Equals(settings.Endpoint.Host,StringComparison.OrdinalIgnoreCase))
+            if (!UsesProxy(destination,effectiveProxy) && string.IsNullOrWhiteSpace(settings.CustomUrl) && context.DnsEndPoint.Host.Equals(settings.Endpoint.Host,StringComparison.OrdinalIgnoreCase))
                 return await OpenAsync([settings.Bootstrap],context.DnsEndPoint.Port,ct);
             return await OpenSystemAsync(context.DnsEndPoint,ct);
         };
-        dnsTransport.Proxy=proxy;
         var resolver = new DohResolver(settings.Endpoint,dnsHandler ?? dnsTransport);
         if(dnsHandler is not null)dnsTransport.Dispose();
         transport.ConnectCallback = async (context,ct) => {
             var host = context.DnsEndPoint.Host;
             var destination = context.InitialRequestMessage.RequestUri!;
-            if (!host.Equals(origin.IdnHost,StringComparison.OrdinalIgnoreCase) || UsesProxy(destination,proxy)
+            if (!host.Equals(origin.IdnHost,StringComparison.OrdinalIgnoreCase) || UsesProxy(destination,effectiveProxy)
                 || LocalHost(host) || IPAddress.TryParse(host,out _)) return await OpenSystemAsync(context.DnsEndPoint,ct);
 
-            // When SystemFallback is enabled in real network mode, prefer fast OS/TUN resolution first
+            // When SystemFallback is enabled in real network mode, prefer fast IPv4-first OS/proxy resolution first
             // so blocked overseas DoH bootstrap IPs (like 1.1.1.1/8.8.8.8) never add 6s stalls per request.
             if (settings.SystemFallback && dnsHandler is null) {
                 try {
@@ -108,6 +133,18 @@ public static class NetworkTransport {
         return new OwnedTransport(transport,resolver);
     }
     private static async ValueTask<Stream> OpenSystemAsync(DnsEndPoint endpoint,CancellationToken ct) {
+        if (IPAddress.TryParse(endpoint.Host, out var literalIp)) {
+            var directSocket = new Socket(literalIp.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try { await directSocket.ConnectAsync(new IPEndPoint(literalIp, endpoint.Port), ct); return new NetworkStream(directSocket, true); }
+            catch { directSocket.Dispose(); throw; }
+        }
+        if (endpoint.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) {
+            return await OpenAsync([IPAddress.Loopback, IPAddress.IPv6Loopback], endpoint.Port, ct);
+        }
+        var resolved = await Dns.GetHostAddressesAsync(endpoint.Host, ct);
+        if (resolved.Length > 0) {
+            return await OpenAsync(resolved, endpoint.Port, ct);
+        }
         var socket = new Socket(SocketType.Stream,ProtocolType.Tcp) { NoDelay=true };
         try { await socket.ConnectAsync(endpoint,ct); return new NetworkStream(socket,true); }
         catch { socket.Dispose(); throw; }

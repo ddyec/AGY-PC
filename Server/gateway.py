@@ -667,9 +667,15 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Never log URLs, messages or Authorization headers.
 
     def respond(self, code, value):
+        import gzip
         data = json.dumps(value, ensure_ascii=False).encode()
+        use_gzip = len(data) > 1024 and "gzip" in self.headers.get("Accept-Encoding", "")
+        if use_gzip:
+            data = gzip.compress(data, compresslevel=5)
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

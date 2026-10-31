@@ -14,12 +14,23 @@ static class Program {
     static void Throws<T>(Action action) where T:Exception{try{action();}catch(T){return;}throw new Exception("Expected "+typeof(T).Name);}
     static async Task Main(string[] args) {
         if(args.Length==2 && args[0]=="--live-readonly-key-file") {
+            var sw=System.Diagnostics.Stopwatch.StartNew();
             var credentials=Credentials.Validate("https://agy.yectech.uk",File.ReadAllText(args[1]).Trim());
             using var api=new GatewayClient(credentials);
+            var t0=sw.ElapsedMilliseconds;
             var status=await api.JsonAsync<GatewayStatus>("status");
+            var t1=sw.ElapsedMilliseconds;
             var models=await api.JsonAsync<ModelReply>("models");
-            var limits=await api.JsonAsync<LimitReply>("limits");
+            var t2=sw.ElapsedMilliseconds;
+            var sessions=await api.JsonAsync<SessionsReply>("sessions");
+            var t3=sw.ElapsedMilliseconds;
+            var bigSession=await api.JsonAsync<Session>("sessions/889032f1-1b14-4ed7-b9bf-868aecc0f73c");
+            var t4=sw.ElapsedMilliseconds;
             var files=await api.JsonAsync<FileListing>("workspace");
+            var t5=sw.ElapsedMilliseconds;
+            var limits=await api.JsonAsync<LimitReply>("limits");
+            var t6=sw.ElapsedMilliseconds;
+            Console.WriteLine($"Live timings: status={t1-t0}ms; models={t2-t1}ms; sessions={t3-t2}ms; bigSession({bigSession.Messages?.Length} msgs)={t4-t3}ms; workspace={t5-t4}ms; limits={t6-t5}ms");
             Console.WriteLine($"Live read-only: status OK; models={models.Models.Length}; families={models.Families.Length}; quotaGroups={limits.Groups.Length}; fileBrowser={status.Capabilities.FileBrowser}; entries={files.Entries.Length}");
             return;
         }
@@ -224,10 +235,10 @@ static class Program {
             await work.SteerNowAsync();
             Assert(fake.Stops==1&&fake.Submissions==1&&work.Pending is null&&work.Draft.Text=="","stopped and steered in one step");
         });
-        await Test("Free specification of custom model ID, workspace path, custom DoH URL and custom skills persist across restarts",async()=>{
+        await Test("Free specification of custom model ID, workspace path, custom DoH URL, FlClash proxy and custom skills persist across restarts",async()=>{
             var store=new MemoryStore();var fake=new Fake();
             using(var work=new Workspace(store,_=>new(Creds,fake))){
-                work.SetNetwork(new(true,"Custom",true,"https://dns.alidns.com/dns-query"));
+                work.SetNetwork(new(true,"Custom",true,"https://dns.alidns.com/dns-query","http://127.0.0.1:7890"));
                 await work.ConnectAsync(Creds);
                 await work.ConfigureAsync(new("claude-sonnet-4-5-custom","xhigh","turbo","accept-edits","subproject/app"));
                 Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.Workspace=="/work/subproject/app","custom model and relative workspace normalized");
@@ -237,7 +248,9 @@ static class Program {
                 Assert(work.Draft.Text.Contains("请审查当前 UI 设计：")&&work.Draft.References.Any(r=>r.Path=="/work/subproject/app/.agents/skills/ui/SKILL.md"),"skill applied with reference");
             }
             using(var work=new Workspace(store,_=>new(Creds,fake))){
-                Assert(work.Network.CustomUrl=="https://dns.alidns.com/dns-query","custom DoH URL persisted");
+                Assert(work.Network.CustomUrl=="https://dns.alidns.com/dns-query"&&work.Network.ProxyUrl=="http://127.0.0.1:7890","custom DoH URL and FlClash proxy persisted");
+                work.SetNetwork(new(false,"Cloudflare",true,null,"direct"));
+                Assert(work.Network.ProxyUrl=="direct","direct proxy override accepted");
                 await work.ConnectAsync(Creds);
                 Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.ApprovalMode=="turbo"&&work.CustomSkills.Count==1,"custom model and skills remembered across restart");
             }

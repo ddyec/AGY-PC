@@ -9,6 +9,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     private string scope = "";
     private ProfileState profile = new();
     private readonly Dictionary<string, Session> sessionCache = [];
+    private DateTimeOffset lastProfileCheck;
     private readonly Func<Credentials,GatewayClient>? factory;
     public Workspace(IStateStore store, Func<Credentials,GatewayClient> factory) : this(store) { this.factory = factory; }
     public event Action? Changed;
@@ -108,6 +109,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
             if (status.Version != 1 || status.Roots.Length == 0 || models.Families.Length == 0 || !status.Capabilities.SeparateEffort || !status.Capabilities.NativeApprovals)
                 throw new InvalidOperationException("请先部署与 AGY iPhone 1.3 配套的新版账号和审批网关。");
             client = candidate; Status = status; Families = models.Families;
+            lastProfileCheck = DateTimeOffset.UtcNow;
             scope = credentials.Address.TrimEnd('/') + "#" + status.AccountProfile;
             profile = state.Profiles.GetValueOrDefault(scope) ?? new();
             var saved = profile.Settings;
@@ -128,11 +130,22 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         } catch { if (client == candidate) { client = null; Status = null; } candidate.Dispose(); throw; }
     }
     private async Task VerifyProfileAsync() {
+        if (factory is null && (DateTimeOffset.UtcNow - lastProfileCheck) < TimeSpan.FromSeconds(20))
+            return;
         var status = await Api.JsonAsync<GatewayStatus>("status");
         if (status.AccountProfile != Status?.AccountProfile) {
             watch?.Cancel(); client?.Dispose(); client = null; Status = null; Selected = null; ++generation;
             throw new InvalidOperationException("服务器已切换账号，请重新连接；没有向新账号发送操作。");
         }
+        lastProfileCheck = DateTimeOffset.UtcNow;
+    }
+    private void UpsertSession(Session snapshot) {
+        sessionCache[snapshot.Id] = snapshot;
+        var existing = Sessions.ToList();
+        var idx = existing.FindIndex(s => s.Id == snapshot.Id);
+        if (idx >= 0) existing[idx] = snapshot;
+        else existing.Insert(0, snapshot);
+        Sessions = [..existing];
     }
     public async Task ReloadAsync() { Sessions = (await Api.JsonAsync<SessionsReply>("sessions")).Sessions; Publish(); }
     public void UpdateDraft(string text, Reference[]? references = null) {
@@ -168,7 +181,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         }
         var selected = await Api.JsonAsync<Session>($"sessions/{GatewayClient.Id(id)}");
         if (epoch != generation) return;
-        sessionCache[selected.Id] = selected;
+        UpsertSession(selected);
         Selected = selected;
         Settings = SettingsFrom(selected);
         ConnectionLabel = selected.Approvals?.Length > 0 ? "等待审批" : selected.Running ? "AGY 正在工作" : "已就绪";
@@ -257,10 +270,13 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         var draft = Draft;
         var queued = profile.Queues.GetValueOrDefault("new");
         Selected = await Api.JsonAsync<Session>("sessions",HttpMethod.Post,ConfigBody(Settings));
+        UpsertSession(Selected);
         profile.Drafts[Selected.Id] = draft; profile.Drafts.Remove("new");
         if (queued is { Count: > 0 }) { profile.Queues[Selected.Id] = queued; profile.Queues.Remove("new"); }
         Save(); Publish();
-        await ReloadAsync(); return Selected.Id;
+        if (factory is not null) await ReloadAsync();
+        else _ = ReloadAsync();
+        return Selected.Id;
     }
     public async Task SendAsync() {
         if (Pending is not null || Selected?.Running == true) throw new InvalidOperationException("请先结束当前任务或核对待确认发送。");
@@ -412,10 +428,12 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         await VerifyProfileAsync();
         var snapshot = await Api.JsonAsync<Session>($"sessions/{GatewayClient.Id(pending.SessionID)}/messages",HttpMethod.Post,
             new { text = pending.Text, requestID = pending.RequestID, attachments = pending.Attachments, references = pending.References.Select(r => r.Path).ToArray() });
-        sessionCache[snapshot.Id] = snapshot;
+        UpsertSession(snapshot);
         Reconcile(snapshot);
         if (Selected?.Id == snapshot.Id) { Selected = snapshot; StartWatch(); }
-        Publish(); await ReloadAsync();
+        Publish();
+        if (factory is not null) await ReloadAsync();
+        else _ = ReloadAsync();
     }
     private void Reconcile(Session snapshot) {
         if (Pending is not { } pending || pending.SessionID != snapshot.Id || snapshot.Messages?.Any(m => m.Id == pending.RequestID) != true) return;
@@ -498,7 +516,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         try{await Api.DownloadAsync(sid,Settings.Workspace,temporary,snapshot:true);HybridBuild.ExtractSnapshot(temporary,destination);}
         finally{if(File.Exists(temporary))File.Delete(temporary);}
     }
-    public Task<LimitReply> LimitsAsync() => Api.JsonAsync<LimitReply>("limits",query:new() { ["refresh"] = "1" });
+    public Task<LimitReply> LimitsAsync(bool forceRefresh = true) => Api.JsonAsync<LimitReply>("limits",query:forceRefresh ? new() { ["refresh"] = "1" } : null);
     public async Task RefreshModelsAsync() {
         Families = (await Api.JsonAsync<ModelReply>("models",query:new() { ["refresh"] = "1" })).Families;
         if (Selected is null) Settings = Settings.Validate(Families,Status!.Roots,Status.DefaultModel);
