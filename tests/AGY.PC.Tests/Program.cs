@@ -120,6 +120,16 @@ static class Program {
             if(!OperatingSystem.IsWindows())Throws<PlatformNotSupportedException>(()=>HybridBuild.Prepare(new(BuildTarget.Windows,"/work","dotnet build")));
             else{var plan=HybridBuild.Prepare(new(BuildTarget.WslLinuxX64,"/home/user/project","make","Ubuntu"));Assert(plan.FileName=="wsl.exe"&&plan.ArgumentList.Last().Contains("x86_64")&&plan.ArgumentList.Contains("Ubuntu"),"WSL target and architecture guard");}
         });
+        Test("Startup preflight detects missing PRI, XBF and framework resources",()=>{
+            var folder=Path.Combine(Path.GetTempPath(),"agy-startup-"+Guid.NewGuid());Directory.CreateDirectory(folder);
+            try{Assert(StartupChecks.MissingFiles(folder).Contains("App.xbf"),"XBF absent");
+                foreach(var relative in StartupChecks.RequiredFiles){var path=Path.Combine(folder,relative);Directory.CreateDirectory(Path.GetDirectoryName(path)!);File.WriteAllBytes(path,[1]);}
+                Assert(StartupChecks.MissingFiles(folder).Length==0,"complete payload");File.Delete(Path.Combine(folder,"AGY-PC.pri"));Assert(StartupChecks.MissingFiles(folder).SequenceEqual(new[]{"AGY-PC.pri"}),"PRI specifically detected");
+            }finally{Directory.Delete(folder,true);}
+        });
+        Test("Native Windows crash exit codes retain their original hexadecimal identity",()=>{
+            var result=StartupChecks.ExitDescription(-1073741189);Assert(result.Contains("0xC000027B")&&result.Contains("原始异常"),"stowed exception is not misdiagnosed as compilation");
+        });
         Console.WriteLine($"{passed} meaningful checks passed.");
     }
     sealed class MemoryStore:IStateStore {

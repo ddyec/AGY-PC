@@ -34,7 +34,7 @@ try {
         $item.SetAttribute('CopyToPublishDirectory','PreserveNewest')
     }
     $version=$document.SelectSingleNode('/Project/PropertyGroup/Version')
-    if ($version) { $version.InnerText='2.0.0-beta.2' }
+    if ($version) { $version.InnerText='2.0.0-beta.3' }
     $document.Save($projectFile)
     foreach ($folder in @('obj','bin')) {
         $generated=Join-Path $project "src\AGY.PC.WinUI\$folder"

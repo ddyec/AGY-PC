@@ -1,12 +1,12 @@
 {
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "uiFramework": "WinUI 3",
   "windowsAppSDK": "2.6.4",
   "dotnetSDK": "10.0.403",
-  "coreTestsPassed": 22,
+  "coreTestsPassed": 24,
   "gatewayTestsPassed": 23,
-  "winuiManagedCompile": "passed",
-  "fullWindowsWinUIPublish": "requires rerun on Windows after resource fix; not verified on Linux",
+  "winuiManagedCompile": "beta.3 requires Windows XAML generation; not completed on Linux",
+  "fullWindowsWinUIPublish": "beta.2 confirmed passed in user Windows log; beta.3 pending rerun",
   "windowsUiScreenshots": "not generated on this Linux server",
   "builderCrossCompiled": "win-x64",
   "releaseAssetKind": "Windows build entry, not a prebuilt WinUI client",
@@ -14,9 +14,9 @@
   "actionsRun": false,
   "realModelTasksSent": 0,
   "productionGateway": "idle restart; project snapshot enabled; same account/key/tunnel",
-  "createdUTC": "2026-10-31T10:26:50.702618+00:00",
-  "builderExeSHA256": "ee97e073c931c0afb131e3b51cab9351b97cef9e0b6a591361bb71504cd22ac6",
-  "lastFix": "PRI175/PRI277 duplicate Assets resource declarations",
+  "createdUTC": "2026-10-31T11:12:26.562275+00:00",
+  "builderExeSHA256": "0d0ce31ff251aa9643478643b3d3b0d2e5a74d1f944de20e1184e53483999452",
+  "lastFix": "Standard App.xaml initialization, payload validation and startup diagnostics",
   "resourceGraph": {
     "before": {
       "Assets/AGY.ico": 2,
@@ -31,5 +31,6 @@
       "win-arm64"
     ],
     "duplicateGuardInjection": "rejected"
-  }
+  },
+  "windowsStartupConfirmed": false
 }

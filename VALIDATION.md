@@ -1,3 +1,19 @@
+# 2.0.0-beta.3 · 启动入口与诊断
+
+- 用户 Windows 日志确认 beta.2 已完成 publish，随后启动退出 -1073741189（0xC000027B）。这说明是启动故障；该状态码不能唯一确定 XAML、资源、环境中的哪一处异常。
+- 改用标准 App.xaml 资源加载和 InitializeComponent，让 Windows XAML 编译器生成应用元数据链；不再靠纯代码添加 XamlControlsResources。
+- 发布时确认应用 PRI 和 App.xbf 生成并复制；启动前检查框架 PRI、WinUI DLL、应用依赖及品牌资源。保留 beta.2 的图片单次收录修复。
+- 启动阶段标记、COM/XAML 原始异常、AppDomain/任务异常写入本机日志。未知 XAML 错误不被设为 Handled；不把异常吞掉假装成功。
+- Windows 构建入口失败时自动采集发布清单与应用事件，并打印可读十六进制状态码；不收集内存转储、注册表、凭据或环境变量全集，不自动上传诊断。
+- 核心可执行回归 **24 项通过**，包含缺失启动资源和退出码格式检查。新增 PowerShell 脚本通过微软解析器语法检查。MSBuild 评估确认 App.xaml 恰好 1 个 ApplicationDefinition，两份品牌资源仍各 1 项。
+- 此版本开始使用 Windows XAML 编译器。Linux 不能执行该原生步骤，因此本次不再把之前纯代码 WinUI 的 Compile 成功当作 beta.3 完整编译证据。**beta.3 的 XAML 编译、完整发布和原生启动尚待 Windows 设备重跑。**构建入口自身在 Linux 上完成 Windows x64 交叉编译。
+- 网关后端与 Google 账号未改动；23 项服务器测试为此前记录，本次未重复运行。没有运行 GitHub Actions。
+
+参考：Microsoft UI Reactor 对无 XAML 应用的元数据链说明：
+https://github.com/microsoft/microsoft-ui-reactor/blob/main/src/Reactor/Hosting/ReactorApp.cs
+
+---
+
 # 2.0.0-beta.2 · PRI175 修复
 
 - 根据真实 Windows 日志，完整构建已通过 C# 编译，失败点为 WinUI PRI 资源索引的重复 `Files/Assets/AGY.ico`。

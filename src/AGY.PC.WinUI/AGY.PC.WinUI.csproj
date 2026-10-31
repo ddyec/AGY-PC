@@ -7,6 +7,9 @@
     <UseWinUI>true</UseWinUI>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <StartupObject>AGY.PC.WinUI.Program</StartupObject>
+    <DisableEmbeddedXbf>true</DisableEmbeddedXbf>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <WindowsAppSDKDeploymentManagerInitialize>false</WindowsAppSDKDeploymentManagerInitialize>
@@ -14,13 +17,15 @@
     <Platforms>x64;ARM64</Platforms>
     <AssemblyName>AGY-PC</AssemblyName>
     <RootNamespace>AGY.PC.WinUI</RootNamespace>
-    <Version>2.0.0-beta.2</Version>
+    <Version>2.0.0-beta.3</Version>
     <ApplicationIcon>Assets/AGY.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PublishTrimmed>false</PublishTrimmed>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup>
+    <None Remove="App.xaml"/>
+    <ApplicationDefinition Include="App.xaml"><Generator>MSBuild:Compile</Generator><XamlRuntime>$(DefaultXamlRuntime)</XamlRuntime></ApplicationDefinition>
     <ProjectReference Include="../AGY.PC.Core/AGY.PC.Core.csproj"/>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4"/>
     <!-- WinUI.props and the .NET SDK both glob Assets. Own this list once,
@@ -39,5 +44,11 @@
     </RemoveDuplicates>
     <Error Condition="'@(_AGYAsset-&gt;Count())' != '@(_AGYUniqueAsset-&gt;Count())'"
            Text="AGY Assets contain duplicate Content items. Check SDK default globs before PRI generation."/>
+  </Target>
+  <Target Name="PublishWinUIStartupResources" AfterTargets="Publish">
+    <Error Condition="!Exists('$(ProjectPriFullPath)')" Text="WinUI application PRI was not generated: $(ProjectPriFullPath)"/>
+    <Error Condition="!Exists('$(TargetDir)App.xbf')" Text="WinUI App.xbf was not generated; do not distribute an incomplete client."/>
+    <Copy SourceFiles="$(ProjectPriFullPath)" DestinationFiles="$(PublishDir)$(AssemblyName).pri" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="$(TargetDir)App.xbf" DestinationFiles="$(PublishDir)App.xbf" SkipUnchangedFiles="true"/>
   </Target>
 </Project>

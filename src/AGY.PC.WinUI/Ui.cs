@@ -4,7 +4,7 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media.Imaging;
 namespace AGY.PC.WinUI;
 internal static class Ui {
-    public static Grid Root()=>(Grid)XamlReader.Load("<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource ApplicationPageBackgroundThemeBrush}'/>");
+    public static Grid Root(){StartupLog.Mark("root.xaml.parse");var root=(Grid)XamlReader.Load("<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource ApplicationPageBackgroundThemeBrush}'/>");StartupLog.Mark("root.xaml.ready");return root;}
     public static Border Card(UIElement child) {
         var card=(Border)XamlReader.Load("<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='12' Padding='20' Margin='0,8,0,8'/>");card.Child=child;return card;
     }

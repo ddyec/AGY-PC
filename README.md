@@ -2,8 +2,19 @@
 
 这一版替换 1.0 的 WPF 界面，使用真正的 Microsoft WinUI 3 / Windows App SDK 2.6.4。原生导航、输入框、密码框、按钮、InfoBar、文件选择器和对话框共享系统主题资源，支持跟随 Windows、浅色和深色。旧版明暗混用、文字不可见的界面不再作为当前实现。
 
-**当前为 `2.0.0-beta.2`。Release 提供源码和 Windows 本机构建入口，不把 Linux 上产生的中间程序集标成 WinUI 运行包。** 本机构建入口本身是 Windows 控制台工具，不是新版 WinUI 客户端；它负责在 Windows 上生成真正的 WinUI 运行包。
+**当前为 `2.0.0-beta.3`。Release 提供源码和 Windows 本机构建入口，不把 Linux 上产生的中间程序集标成 WinUI 运行包。** 本机构建入口本身是 Windows 控制台工具，不是新版 WinUI 客户端；它负责在 Windows 上生成真正的 WinUI 运行包。
 
+
+
+## 已完成编译但启动退出 `0xC000027B`
+
+beta.3 改用标准 `App.xaml` / `InitializeComponent`，由 WinUI 工具链生成 XAML 元数据及框架资源初始化。此前纯代码入口没有生成这一层；退出码本身并不能唯一证明崩溃原因，因此同时补充原始异常采集。
+
+已构建失败的设备优先下载 `AGY-PC-WinUI-Startup-Repair.zip`，完整解压后双击 `Repair-WinUI-Startup.cmd`。它备份并修补当前用户最新失败构建目录，复用现有 SDK / NuGet 缓存，不读取或清空登录信息。
+
+需要先采集旧程序证据、暂不重新编译时，可以运行独立的 `AGY-PC-Startup-Diagnostics.zip` 内的采集脚本。诊断只保存在本机，不自动上传、不修改注册表、不收集内存转储。
+
+失败时查看本次 WindowsBuilds 目录下 `startup-diagnostics/diagnostic-summary.txt` 与 `startup.log`；包含原始异常、启动阶段、发布文件清单和本应用的近期 Windows 事件。若进程在托管入口前失败，没有 startup.log 时也会明确记录这一点。`--ui-check` 不再读取真实登录文件，也不连接服务器。
 
 ## 已遇到 PRI175 / PRI277 的现有构建
 
@@ -15,11 +26,11 @@
 powershell -ExecutionPolicy Bypass -File .\repair-pri175.ps1 -BuildDirectory "$env:LOCALAPPDATA\AGY-PC\WindowsBuilds\20261031-181823-989ffa"
 ```
 
-2.0.0-beta.2 已从源码修复：保留官方图标、Logo 和 EXE 嵌入图标；先清除 SDK 默认通配项再显式收录，每份图片只进入 PRI 一次。没有禁用资源索引。
+2.0.0-beta.3 已从源码修复：保留官方图标、Logo 和 EXE 嵌入图标；先清除 SDK 默认通配项再显式收录，每份图片只进入 PRI 一次。没有禁用资源索引。
 
 ## Windows 上使用新版
 
-从 Release 下载 `AGY-PC-2.0.0-beta.2-Windows-Builder.zip`，解压到普通可写目录，运行 `AGY-PC-Windows-Builder.exe`。
+从 Release 下载 `AGY-PC-2.0.0-beta.3-Windows-Builder.zip`，解压到普通可写目录，运行 `AGY-PC-Windows-Builder.exe`。
 
 它会：
 
@@ -73,4 +84,4 @@ Windows ARM64 可传 `-Runtime win-arm64` 进行本机构建；本次未发布 A
 
 ## 验证与边界
 
-见 [VALIDATION.md](VALIDATION.md)。这台 Linux 上已执行核心与网关测试，并完成 WinUI 托管代码的类型编译。完整 WinUI Windows 原生工具链和真实界面必须在 Windows 设备完成；仓库与 Release 均不把尚未运行的截图检查写成“已通过”。所有流程不使用 GitHub Actions。
+见 [VALIDATION.md](VALIDATION.md)。这台 Linux 上已执行核心与网关测试，此前纯代码版本完成过托管类型编译；beta.3 的 App.xaml 生成与完整编译必须在 Windows 设备完成。真实界面也必须在 Windows 设备验证；仓库与 Release 均不把尚未运行的截图检查写成“已通过”。所有流程不使用 GitHub Actions。

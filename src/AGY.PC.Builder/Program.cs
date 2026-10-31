@@ -26,26 +26,33 @@ internal static class Program {
             await RunAsync(dotnet,["run","--project","tests/AGY.PC.Tests","-c","Release"],project);
             var output=Path.Combine(LogFolder,"AGY-PC-WinUI");
             await RunAsync(dotnet,["publish","src/AGY.PC.WinUI","-c","Release","-p:Platform=x64","-r","win-x64","--self-contained","true","-p:WindowsAppSDKSelfContained=true","-p:PublishSingleFile=false","-o",output],project);
+            var missing=StartupChecks.MissingFiles(output);
+            if(missing.Length>0){await CollectAsync(project,output);throw new IOException("发布目录缺少 WinUI 启动文件："+string.Join(", ",missing)+"。诊断已保存在 "+LogFolder);}
             var exe=Path.Combine(output,"AGY-PC.exe");if(!File.Exists(exe))throw new IOException("Windows 编译未生成 AGY-PC.exe。");
-            Say("正在运行真正的 WinUI 浅色 / 深色截图检查…");
+            Say("正在 Windows 上启动 WinUI 并生成浅色 / 深色截图…");
             var check=new ProcessStartInfo(exe){UseShellExecute=false,WorkingDirectory=output};check.ArgumentList.Add("--ui-check");
+            check.Environment["AGY_PC_DIAGNOSTICS_DIR"]=Path.Combine(LogFolder,"startup-diagnostics");
             using(var process=Process.Start(check)??throw new IOException("无法启动 WinUI 界面检查。")){
                 try{await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));}
                 catch(TimeoutException){process.Kill(true);throw new IOException("WinUI 界面检查超时，请查看日志。");}
-                if(process.ExitCode!=0)throw new IOException("WinUI 界面检查退出码："+process.ExitCode);
+                if(process.ExitCode!=0){await CollectAsync(project,output);throw new IOException("WinUI 启动失败："+StartupChecks.ExitDescription(process.ExitCode)+"。请查看 "+Path.Combine(LogFolder,"startup-diagnostics","diagnostic-summary.txt"));}
             }
             var screenshots=Path.Combine(output,"ui-check");
             if(!File.Exists(Path.Combine(screenshots,"login-light.png"))||!File.Exists(Path.Combine(screenshots,"login-dark.png"))||!File.Exists(Path.Combine(screenshots,"report.json")))
-                throw new IOException("未生成界面检查截图，不能认定 WinUI 已运行。请查看 "+Path.Combine(output,"ui-check-error.txt"));
+                {await CollectAsync(project,output);throw new IOException("未生成界面截图。请查看 startup-diagnostics/diagnostic-summary.txt。");}
             File.WriteAllText(Path.Combine(output,"windows-build-report.json"),JsonSerializer.Serialize(new{builtOnWindows=true,uiCaptureCompleted=true,visualReviewStillRequired=true,sdk="10.0.403",buildID=Path.GetFileName(LogFolder),exeSHA256=Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(exe)))},Wire.Json));
             foreach(var name in new[]{"README.md","THIRD_PARTY_NOTICES.md"})File.Copy(Path.Combine(project,name),Path.Combine(output,name),true);
             var licenses=Path.Combine(output,"licenses");Directory.CreateDirectory(licenses);foreach(var license in Directory.GetFiles(Path.Combine(project,"docs","licenses")))File.Copy(license,Path.Combine(licenses,Path.GetFileName(license)),true);
-            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.2-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
+            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.3-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
             Say("编译和截图生成完成。截图需要人工确认，不等同于全部交互验收。");Say("运行目录："+output);Say("运行包："+archive);Say("构建日志："+Path.Combine(LogFolder,"build.log"));
             Process.Start(new ProcessStartInfo("explorer.exe",screenshots){UseShellExecute=true});
             Process.Start(new ProcessStartInfo(exe){UseShellExecute=true,WorkingDirectory=output});return 0;
         }catch(Exception error){Say("未完成："+error.Message);Say("日志目录："+LogFolder);if(!Console.IsInputRedirected){Say("按 Enter 关闭。");Console.ReadLine();}return 1;}
         finally{log?.Dispose();}
+    }
+    private static async Task CollectAsync(string project,string output){
+        try{var shell=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe");await RunAsync(shell,["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(project,"scripts","collect-winui-diagnostics.ps1"),"-RuntimeDirectory",output,"-Destination",Path.Combine(LogFolder,"startup-diagnostics"),"-NoLaunch","-ExpectXaml"],project);}
+        catch(Exception error){Say("补充诊断失败："+error.Message+"；请保留 WindowsBuilds 下的日志。");}
     }
     private static void Say(string value){lock(LogGate){Console.WriteLine(value);log?.WriteLine(value);}}
     private static async Task<string> FindDotnetAsync(Bundle config){

@@ -32,9 +32,10 @@ internal sealed class MainWindow : Window {
     private string signature="",session="";
     private readonly UIElement login,chat,settings;
     public MainWindow(Workspace work,bool uiCheck) {
+        StartupLog.Mark("window.constructor.enter");
         this.work=work;this.uiCheck=uiCheck;
-        Title="AGY - PC";AppWindow.Resize(new Windows.Graphics.SizeInt32(1280,860));AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory,"Assets","AGY.ico"));
-        if(Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())SystemBackdrop=new MicaBackdrop();
+        Title="AGY - PC";AppWindow.Resize(new Windows.Graphics.SizeInt32(1280,860));try{AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory,"Assets","AGY.ico"));}catch(Exception e){StartupLog.Error("window.icon.optional",e);}
+        try{if(Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())SystemBackdrop=new MicaBackdrop();}catch(Exception e){StartupLog.Error("window.mica.optional",e);}
         Content=root;
         root.RowDefinitions.Add(new(){Height=GridLength.Auto});root.RowDefinitions.Add(new(){Height=GridLength.Auto});root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         var brand=new StackPanel{Orientation=Orientation.Horizontal,Spacing=10,Margin=new Thickness(20,14,20,10)};brand.Children.Add(Ui.Logo(26));brand.Children.Add(Ui.Text("AGY - PC",18));brand.Children.Add(connection);root.Children.Add(brand);
@@ -45,6 +46,7 @@ internal sealed class MainWindow : Window {
         nav.PaneCustomContent=Ui.Stack(Ui.Caption("最近会话"),historySearch,history);
         var surface=new Grid{Padding=new Thickness(22,8,22,18)};surface.RowDefinitions.Add(new(){Height=GridLength.Auto});surface.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         var pages=new Grid();Grid.SetRow(pages,1);surface.Children.Add(pages);nav.Content=surface;host.Children.Add(nav);
+        StartupLog.Mark("window.pages.construct");
         chat=MakeChat();settings=MakeSettings();files=new FileBrowser(this,work,false,false);builds=new BuildPane(this,work);
         pages.Children.Add(chat);pages.Children.Add(files.View);pages.Children.Add(builds.View);pages.Children.Add(settings);
         send=Ui.Button("发送",()=>Run(async()=>{FlushDraft();following=true;await work.SendAsync();}),true);stop=Ui.Button("停止",()=>Run(work.StopAsync));save=Ui.Button("保存配置",()=>Run(SaveSettingsAsync),true);latest=Ui.Button("↓ 回到最新",()=>{following=true;transcript.ChangeView(null,transcript.ScrollableHeight,null);});
@@ -66,7 +68,7 @@ internal sealed class MainWindow : Window {
         presentation.SelectionChanged+=(_,_)=>{if(rendering)return;try{work.SetPresentation(presentation.SelectedItem as string??"原版");signature="";Render();}catch(Exception e){Error(e);}};
         work.Changed+=()=>DispatcherQueue.TryEnqueue(Render);
         root.Loaded+=(_,_)=>{if(uiCheck){_=CaptureThemesAsync();return;}if(work.SavedConnection is {} saved)Run(()=>work.ConnectAsync(saved));};
-        Closed+=(_,_)=>{builds.Cancel();work.Dispose();};Render();
+        Closed+=(_,_)=>{builds.Cancel();work.Dispose();};Render();StartupLog.Mark("window.constructor.ready");
     }
     internal sealed record Choice(string Id,string Name){public override string ToString()=>Name;}
     private UIElement MakeLogin() {
@@ -125,6 +127,6 @@ internal sealed class MainWindow : Window {
     private async Task RenameAsync(){if(history.SelectedItem is not Session selected)return;var input=new TextBox{Text=selected.Name,Header="会话名称"};if(await DialogAsync("重命名会话",input,"保存")==ContentDialogResult.Primary&&!string.IsNullOrWhiteSpace(input.Text))await work.RenameAsync(selected,input.Text);}
     private async Task DeleteAsync(){if(history.SelectedItem is not Session selected)return;if(await DialogAsync("删除会话历史",Ui.Text("只删除网关历史条目，不删除项目文件。"),"删除")==ContentDialogResult.Primary)await work.DeleteAsync(selected);}
     private async Task LimitsAsync(){var reply=await work.LimitsAsync();var panel=Ui.Stack();foreach(var group in reply.Groups){panel.Children.Add(Ui.Text(group.Name,18));foreach(var bucket in group.Buckets)panel.Children.Add(Ui.Text(bucket.Name+"："+(bucket.Remaining is {} fraction?fraction.ToString("P0"):"未提供")+(DateTimeOffset.TryParse(bucket.Reset,out var reset)?" · "+reset.ToLocalTime().ToString("g"):"")));}await DialogAsync("真实账号额度",new ScrollViewer{Content=panel,MaxHeight=460});}
-    private async Task CaptureThemesAsync(){try{var folder=Path.Combine(AppContext.BaseDirectory,"ui-check");Directory.CreateDirectory(folder);foreach(var value in new[]{ElementTheme.Light,ElementTheme.Dark}){root.RequestedTheme=value;await Task.Delay(1500);var bitmap=new Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap();await bitmap.RenderAsync(root);var pixels=await bitmap.GetPixelsAsync();await SaveImageAsync(bitmap,pixels,Path.Combine(folder,"login-"+value.ToString().ToLowerInvariant()+".png"));}File.WriteAllText(Path.Combine(folder,"report.json"),System.Text.Json.JsonSerializer.Serialize(new{framework="WinUI 3",renderedOnWindows=true,width=root.ActualWidth,height=root.ActualHeight,lightAndDarkCaptured=true}));}catch(Exception e){File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"ui-check-error.txt"),e.ToString());}finally{Application.Current.Exit();}}
+    private async Task CaptureThemesAsync(){StartupLog.Mark("ui-check.begin");try{var folder=Path.Combine(AppContext.BaseDirectory,"ui-check");Directory.CreateDirectory(folder);foreach(var value in new[]{ElementTheme.Light,ElementTheme.Dark}){root.RequestedTheme=value;StartupLog.Mark("ui-check.theme",value.ToString());await Task.Delay(1500);var bitmap=new Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap();await bitmap.RenderAsync(root);var pixels=await bitmap.GetPixelsAsync();await SaveImageAsync(bitmap,pixels,Path.Combine(folder,"login-"+value.ToString().ToLowerInvariant()+".png"));}File.WriteAllText(Path.Combine(folder,"report.json"),System.Text.Json.JsonSerializer.Serialize(new{framework="WinUI 3",renderedOnWindows=true,width=root.ActualWidth,height=root.ActualHeight,lightAndDarkCaptured=true}));}catch(Exception e){StartupLog.Error("ui-check.failed",e);Environment.ExitCode=1;File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"ui-check-error.txt"),e.ToString());}finally{Application.Current.Exit();}}
     private static async Task SaveImageAsync(Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap bitmap,Windows.Storage.Streams.IBuffer pixels,string path){var folder=await StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(path)!);var file=await folder.CreateFileAsync(Path.GetFileName(path),CreationCollisionOption.ReplaceExisting);using var stream=await file.OpenAsync(FileAccessMode.ReadWrite);var encoder=await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId,stream);var bytes=new byte[pixels.Length];using(var reader=Windows.Storage.Streams.DataReader.FromBuffer(pixels)){reader.ReadBytes(bytes);}encoder.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,(uint)bitmap.PixelWidth,(uint)bitmap.PixelHeight,96,96,bytes);await encoder.FlushAsync();}
 }
