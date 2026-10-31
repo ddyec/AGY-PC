@@ -1,21 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Windows;
-using AGY.PC.Core;
-
-namespace AGY.PC.Windows;
-public static class Program {
-    [STAThread] public static void Main() {
-        var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-        Theme.Install(app);
-        app.DispatcherUnhandledException += (_,e) => { MessageBox.Show(e.Exception.Message,"AGY - PC",MessageBoxButton.OK,MessageBoxImage.Error); e.Handled=true; };
-        try {
-            var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"AGY-PC","state.bin");
-            var workspace = new Workspace(new ProtectedStateStore(path,Dpapi.Protect,Dpapi.Unprotect));
-            app.Run(new MainWindow(workspace));
-        } catch (Exception error) { MessageBox.Show(error.Message,"AGY - PC",MessageBoxButton.OK,MessageBoxImage.Error); }
-    }
-}
+namespace AGY.PC.WinUI;
 internal static class Dpapi {
     [StructLayout(LayoutKind.Sequential)] private struct Blob { public int Length; public IntPtr Data; }
     [DllImport("crypt32.dll",SetLastError=true,CharSet=CharSet.Unicode)] [return:MarshalAs(UnmanagedType.Bool)]

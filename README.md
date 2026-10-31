@@ -1,52 +1,63 @@
-# AGY - PC
+# AGY - PC 2.0 · WinUI 3 与混合构建
 
-独立的 Windows 原生 WPF 客户端，沿用 AGY iPhone 1.3.1 的网关与任务逻辑。不是浏览器包装，不要求安装浏览器扩展。版本 **1.0.0**，首次交付 Windows x64 自包含运行包，同时提供完整源码。
+这一版替换 1.0 的 WPF 界面，使用真正的 Microsoft WinUI 3 / Windows App SDK 2.6.4。原生导航、输入框、密码框、按钮、InfoBar、文件选择器和对话框共享系统主题资源，支持跟随 Windows、浅色和深色。旧版明暗混用、文字不可见的界面不再作为当前实现。
 
-## 直接使用
+**当前为 `2.0.0-beta.1`。Release 提供源码和 Windows 本机构建入口，不把 Linux 上产生的中间程序集标成 WinUI 运行包。** 本机构建入口本身是 Windows 控制台工具，不是新版 WinUI 客户端；它负责在 Windows 上生成真正的 WinUI 运行包。
 
-1. 解压 `AGY-PC-1.0.0-win-x64.zip`，运行 `AGY-PC.exe`。运行包自带 .NET，无需另装运行时。
-2. 地址填 `https://agy.yectech.uk`，连接密钥填 iPhone 使用的同一个密钥。源码和运行包均不含用户密钥，不需要在电脑端输入 Google 密码。
-3. 右侧先选模型，再选它实际支持的思考强度；审批策略和执行方式独立选择，点击“保存配置”。配置、项目文件夹、输出展示和草稿按服务器与账号保存。
-4. 中间输入消息，点击“发送”或按 **Ctrl+Enter**。Enter 保留为换行，避免中文输入法选词时误发。可以拖入文件，或点“上传”。
-5. 输入 `@` 或点“@ 文件 / 文件夹”打开原生文件窗口。双击进入目录，选中文件夹后点“@ 引用选中项”即可引用整个目录，也可引用整个当前文件夹。手机/电脑都不需要手写服务器路径。
-6. 左下“文件与产物”区分工作区、已上传文件和 AGY 产物。可搜索当前目录、按修改时间排序、显示隐藏文件、上传、预览和另存下载。上传本身不发送模型任务。
-7. Restriction 会显示工具的实际参数，单次允许或拒绝；Turbo 无逐项确认，仍遵守 AGY 明确禁止的规则。聊天可选原版、步骤摘要、结论优先；工具参数和输出均可展开查看，代码可以复制和切换换行。
-8. 发送结果不明确时，使用“核对会话”或“按原编号重试”。断线或重启不会自动重发任务。
+## Windows 上使用新版
 
-已有会话从服务器恢复自己的模型与策略。查看历史不会把旧会话的 Turbo 等配置写成新会话默认值。新账号不会继承另一个账号的 Turbo、草稿或待发送内容；检测到服务器换账号后会要求重新连接。
+从 Release 下载 `AGY-PC-2.0.0-beta.1-Windows-Builder.zip`，解压到普通可写目录，运行 `AGY-PC-Windows-Builder.exe`。
 
-## 连接与文件边界
+它会：
 
-客户端使用与 iPhone 相同的 `/v1/` 认证网关、SSE 快照和原生审批桥接，需要已部署 AGY iPhone 1.3 的配套后端。不会在 Windows 端启动第二个 AGY 账号或替换现有服务器服务。服务器工作区继续由网关管理，界面以相对路径展示文件。
+1. 校验随包源码 SHA-256。
+2. 检查 .NET 10 SDK；缺少时从 Microsoft 固定版本地址下载并验证 SHA-512，只安装到当前用户的 AGY-PC 工具缓存。
+3. 在 Windows 上运行核心测试，调用真正的 Windows SDK 工具完整构建 WinUI。
+4. 启动 WinUI 的 `--ui-check`，生成真实的浅色与深色登录页 PNG 和检查报告。缺少这些结果会判为未完成，而非伪报成功。
+5. 生成运行包、打开截图目录，并启动刚编译的新客户端。截图仍需人工检查，文件选择、DPI、输入法等交互并不因截图生成而自动验收。
 
-文件与目录引用传递完整路径及类型，AGY 按需读取，不递归粘贴内容。单文件上传/下载上限 25 MiB，每批上传/每条消息引用最多 8 项。现有网关的每目录 5000 项限制保留；暂未提供全局递归搜索、目录 ZIP 下载或文件移动/删除。
+源码、日志、运行包位于 `%LOCALAPPDATA%\AGY-PC\WindowsBuilds\<本次构建>/`。首次下载 SDK / NuGet 需要网络。构建入口仅支持 Windows x64；不会在 WSL 中运行 Windows SDK 的 `mt.exe` 或 `MakePri.exe`。
 
-原生预览支持 Windows 能解码的位图、2 MiB 内的常见文本/源码；PDF、Office 等文件请另存后使用自己的应用打开。HTML/SVG 只作为源码显示，不执行脚本。消息中的 HTTPS 链接由默认浏览器打开，网关密钥不会附加到外部站点。Markdown 提供原文、代码块及文件链接展示，不是完整的浏览器 Markdown/CSS 排版引擎。
+新版启动后填写与 iPhone 相同的服务器地址、连接密钥。现有 Windows 用户的 DPAPI 加密连接记录兼容保留，源码和构建包不包含用户密钥。
 
-## Windows 本机记忆
+## 混合工作流
 
-连接密钥、配置、草稿、待确认请求保存在 `%LOCALAPPDATA%\AGY-PC\state.bin`，用当前 Windows 用户的 DPAPI 加密。运行包可以移动，登录信息跟随本机 Windows 用户；不会把凭据写到 exe 所在目录或明文配置里。读取加密状态失败时不会静默清空待确认请求。
+“混合构建”面板提供三个明确执行位置：
 
-暂存预览位于当前用户临时目录 `AGY-PC`；保存到自己选择的位置后可清理这些暂存副本。下载使用临时文件，完整接收后才替换目标文件。
+| 项目 | 执行位置 | 如何执行 |
+| --- | --- | --- |
+| Windows 程序 / WinUI | Windows 本机 | 同步到新本地副本或选择本地目录，确认命令后用 PowerShell 构建 |
+| 网页、服务端项目 | 当前服务器 | 把构建请求发送给当前 AGY 会话，继续使用会话审批、日志和产物逻辑 |
+| Linux x64 项目 | Windows 设备的 WSL | 指定发行版或用默认发行版，自动转换本地目录路径；先验证 `uname -m` 为 `x86_64` |
 
-## 自己编译
+当前服务器为 ARM64，不把服务器原生构建当成 x64 Linux 构建。WSL 不可用或架构不符合时会拒绝，不静默切换目标。
 
-安装 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)，在本目录用 PowerShell 运行：
+执行前展示实际目标、目录与完整命令，只有点击“执行这一次”才启动本机/WSL 操作。当前为用户确认驱动的混合构建面板，**尚未实现模型自动调度到离线 Windows 节点、无人值守任务队列、WSL 发行版自动安装或双向增量文件同步**。
+
+“同步服务器项目到新副本”通过认证快照接口获取源文件。每次生成独立目录，不覆盖 Windows 本地改动；排除常见凭据目录、`.env*`、密钥文件、构建缓存、网关数据库和符号链接。提取拒绝越界、符号链接、大小写冲突与 Windows 保留文件名。仍需遵守服务器允许的工作区范围。快照上限 25 MiB / 5000 项。
+
+本机与 WSL 构建日志保存在本机，可明确点击“回传构建日志”“回传产物文件”，上传到当前会话的“已上传”区后再引用。单文件回传目前为 25 MiB，大型自包含 Windows 程序的安装包请先保留在 Windows 本机；本版未提供大文件分片回传。WSL 停止操作会尝试结束本次构建的独立进程组及对应 Windows 主进程。
+
+## 会话与文件
+
+保留现有网关逻辑：聊天与历史、真实模型清单、独立思考强度、Restriction/Turbo、单次审批、账号额度、配置记忆、草稿与原编号重试。输入 `@` 或打开文件窗口可引用文件及整个文件夹；手机和电脑不需要手写服务器绝对路径。
+
+Enter 换行，Ctrl+Enter 发送。文件可以拖入或从原生选择器上传。原生控件用于文本、代码、步骤展开及文件链接；不是网页渲染器，也不声称完整复刻所有 Markdown/CSS 排版。
+
+## 自己构建
+
+在 Windows 安装 .NET SDK 10.0.403 或更新兼容版本后：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build-winui.ps1
 ```
 
-ARM64 源码构建入口：
+Windows ARM64 可传 `-Runtime win-arm64` 进行本机构建；本次未发布 ARM64 构建入口，也未在 ARM64 Windows 验证。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Runtime win-arm64
-```
+## 网关更新
 
-脚本只在本机执行测试与发布，不使用 GitHub Actions。首次恢复需要从微软 NuGet 下载 Windows 桌面包。源码没有 CI 工作流。
+`Server/` 是与 iPhone 向后兼容的配套后端，新增 `GET /v1/sessions/{id}/snapshot` 与 `projectSnapshots` 能力标识。Windows 不运行这套 Python 服务；服务器端需部署新版网关才支持项目快照。不会更改 Google 登录、手机密钥或 Cloudflare 隧道。
 
-## 验证范围
+## 验证与边界
 
-详见 [VALIDATION.md](VALIDATION.md)。本次在 Linux ARM64 上使用微软 .NET 10 SDK，实际完成 Windows x64 交叉编译与发布，已生成 PE x64 exe。跨平台核心测试和真实网关只读检查已执行。**没有真实 Windows 桌面，尚未验证窗口布局、DPI、输入法、文件选择、DPAPI 和 exe 启动。**目标为 Windows x64（建议 Windows 11）；本交付不是 Windows 真机验收通过的声明，也未进行代码签名。
-
-官方图标直接沿用 Google 原图，仅转换成 Windows ICO。品牌与运行库说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。这是独立客户端，并非 Google 官方 Windows 产品。
+见 [VALIDATION.md](VALIDATION.md)。这台 Linux 上已执行核心与网关测试，并完成 WinUI 托管代码的类型编译。完整 WinUI Windows 原生工具链和真实界面必须在 Windows 设备完成；仓库与 Release 均不把尚未运行的截图检查写成“已通过”。所有流程不使用 GitHub Actions。

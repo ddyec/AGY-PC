@@ -86,3 +86,10 @@ Status capabilities `fileBrowser` and `directoryMentions` advertise the matching
 The phone opens the picker on a trailing `@`, or via “@ 引用工作文件”. Rows offer navigation/preview and a separate `@` action, including whole-folder references and a current-folder action. Draft reference chips show relative paths, survive reopening a session, and are included in the keychain-protected pending-send payload. An account change clears them with other account caches.
 
 Reference semantics follow [Google's official mentions documentation](https://antigravity.google/docs/at-mentions): paths identify context, and contents are read when needed. This headless integration does not implement the TUI's interactive suggestion protocol or a private binary mention format.
+
+
+## Hybrid build project snapshots (PC 2.0)
+
+`GET /v1/sessions/{sid}/snapshot?path=<project-directory>` returns a ZIP of a directory inside the session workspace. Requires the normal gateway bearer token. `projectSnapshots` in status capabilities advertises support. Source data is opened through the existing no-follow file boundary checks. Snapshots exclude generated/cache directories, common credential directories, `.env*`, key files, symlinks, the gateway's own data directory and isolated CLI profile. Limits are 5000 entries and 25 MiB total source/ZIP bytes. An unrepresentable Windows path or case collision is rejected by the Windows extractor, not silently renamed. The PC always extracts into a new empty local copy.
+
+This is a source transfer endpoint, not a remote command execution endpoint. Windows/WSL commands run in the PC after an explicit local confirmation. Server builds continue through the ordinary AGY session and its approval policy. There is no unattended remote Windows build queue in this version.

@@ -61,9 +61,9 @@ public sealed class GatewayClient : IDisposable {
         using var response = await http.SendAsync(request,deadline.Token); await Validate(response,deadline.Token);
         return JsonSerializer.Deserialize<Attachment>(await response.Content.ReadAsStringAsync(deadline.Token),Wire.Json) ?? throw new InvalidDataException("上传响应无效。");
     }
-    public async Task DownloadAsync(string sid, string remote, string destination, CancellationToken ct = default) {
+    public async Task DownloadAsync(string sid, string remote, string destination, CancellationToken ct = default, bool snapshot = false) {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromMinutes(5));
-        using var request = Request($"sessions/{Id(sid)}/files",HttpMethod.Get,new() { ["path"] = remote });
+        using var request = Request($"sessions/{Id(sid)}/{(snapshot ? "snapshot" : "files")}",HttpMethod.Get,new() { ["path"] = remote });
         request.Headers.Accept.Clear(); request.Headers.Accept.ParseAdd("*/*");
         using var response = await http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token); await Validate(response,deadline.Token);
         if (response.Content.Headers.ContentLength > FileRules.MaxFile) throw new InvalidDataException("下载文件超过 25 MiB。");

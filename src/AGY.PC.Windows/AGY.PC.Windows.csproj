@@ -1,4 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-<PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><EnableWindowsTargeting>true</EnableWindowsTargeting><AssemblyName>AGY-PC</AssemblyName><RootNamespace>AGY.PC.Windows</RootNamespace><Version>1.0.0</Version><ApplicationIcon>Assets/AGY.ico</ApplicationIcon><ApplicationManifest>app.manifest</ApplicationManifest><PublishTrimmed>false</PublishTrimmed><DebugType>embedded</DebugType><SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages></PropertyGroup>
-<ItemGroup><ProjectReference Include="../AGY.PC.Core/AGY.PC.Core.csproj"/><Resource Include="Assets/Mark.png"/></ItemGroup>
-</Project>

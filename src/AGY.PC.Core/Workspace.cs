@@ -22,6 +22,10 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public string ConnectionLabel { get; private set; } = "尚未连接";
     public string? Notice { get; private set; }
     public string Presentation => profile.Presentation;
+    public string Theme => profile.Theme;
+    public BuildPlan? Build => profile.Build;
+    public void RememberBuild(BuildPlan plan) { profile.Build=plan;Save(); }
+    public void SetTheme(string theme) { if(theme is not ("Default" or "Light" or "Dark"))return;profile.Theme=theme;Save(); }
     public void SetPresentation(string value) { if (value is not ("原版" or "步骤摘要" or "结论优先")) return; profile.Presentation=value; Save(); }
     private GatewayClient Api => client ?? throw new InvalidOperationException("请先连接服务器。");
     private void Publish() => Changed?.Invoke();
@@ -204,6 +208,14 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     }
     public async Task DownloadAsync(string remote, string destination) {
         await VerifyProfileAsync(); var sid = await EnsureSessionAsync(); await Api.DownloadAsync(sid,remote,destination);
+    }
+    public async Task SynchronizeProjectAsync(string destination) {
+        if(Selected?.Running==true)throw new InvalidOperationException("请等待当前服务器任务结束后同步项目。");
+        if(Status?.Capabilities.ProjectSnapshots!=true)throw new InvalidOperationException("服务器尚未启用项目同步，请更新配套网关。");
+        await VerifyProfileAsync();var sid=await EnsureSessionAsync();
+        var temporary=Path.Combine(Path.GetTempPath(),"agy-project-"+Guid.NewGuid()+".zip");
+        try{await Api.DownloadAsync(sid,Settings.Workspace,temporary,snapshot:true);HybridBuild.ExtractSnapshot(temporary,destination);}
+        finally{if(File.Exists(temporary))File.Delete(temporary);}
     }
     public Task<LimitReply> LimitsAsync() => Api.JsonAsync<LimitReply>("limits",query:new() { ["refresh"] = "1" });
     public async Task RefreshModelsAsync() {

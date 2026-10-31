@@ -101,6 +101,25 @@ static class Program {
         await Test("Profile changes block mutation and never forward pending to new account",async()=>{
             var fake=new Fake();using var work=new Workspace(new MemoryStore(),_=>new(Creds,fake));await work.ConnectAsync(Creds);work.UpdateDraft("secret task");fake.Profile="different";await Throws<InvalidOperationException>(work.SendAsync);Assert(fake.Submissions==0&&!work.Connected,"blocked");
         });
+        Test("Project snapshots extract into fresh folders and preserve Unicode bytes",()=>{
+            var directory=Path.Combine(Path.GetTempPath(),"agy-snapshot-"+Guid.NewGuid());Directory.CreateDirectory(directory);
+            try{var zip=Path.Combine(directory,"source.zip");using(var archive=System.IO.Compression.ZipFile.Open(zip,System.IO.Compression.ZipArchiveMode.Create)){var item=archive.CreateEntry("项目/中文 空格.bin");using var file=item.Open();file.Write(Fake.Binary);}
+                var target=Path.Combine(directory,"target");HybridBuild.ExtractSnapshot(zip,target);Assert(File.ReadAllBytes(Path.Combine(target,"项目/中文 空格.bin")).SequenceEqual(Fake.Binary),"snapshot bytes");Throws<InvalidOperationException>(()=>HybridBuild.ExtractSnapshot(zip,target));
+            }finally{Directory.Delete(directory,true);}
+        });
+        Test("Snapshot extraction refuses traversal, symlinks, case conflicts and device files",()=>{
+            foreach(var names in new[]{new[]{"../escape"},new[]{"CON.txt"},new[]{"a.txt","A.txt"},new[]{"link"}}){
+                var directory=Path.Combine(Path.GetTempPath(),"agy-hostile-"+Guid.NewGuid());Directory.CreateDirectory(directory);
+                try{var zip=Path.Combine(directory,"source.zip");using(var archive=System.IO.Compression.ZipFile.Open(zip,System.IO.Compression.ZipArchiveMode.Create)){foreach(var name in names){var entry=archive.CreateEntry(name);if(name=="link")entry.ExternalAttributes=unchecked((int)0xA1FF0000);using var file=entry.Open();file.WriteByte(1);}}
+                    Throws<InvalidDataException>(()=>HybridBuild.ExtractSnapshot(zip,Path.Combine(directory,"target")));Assert(!File.Exists(Path.Combine(directory,"escape")),"no escape");
+                }finally{Directory.Delete(directory,true);}
+            }
+        });
+        Test("Hybrid targets cannot silently execute Windows or server commands on ARM Linux",()=>{
+            Throws<InvalidOperationException>(()=>HybridBuild.Prepare(new(BuildTarget.Server,"/work","npm run build")));
+            if(!OperatingSystem.IsWindows())Throws<PlatformNotSupportedException>(()=>HybridBuild.Prepare(new(BuildTarget.Windows,"/work","dotnet build")));
+            else{var plan=HybridBuild.Prepare(new(BuildTarget.WslLinuxX64,"/home/user/project","make","Ubuntu"));Assert(plan.FileName=="wsl.exe"&&plan.ArgumentList.Last().Contains("x86_64")&&plan.ArgumentList.Contains("Ubuntu"),"WSL target and architecture guard");}
+        });
         Console.WriteLine($"{passed} meaningful checks passed.");
     }
     sealed class MemoryStore:IStateStore {

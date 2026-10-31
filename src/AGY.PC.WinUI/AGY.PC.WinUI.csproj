@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWinUI>true</UseWinUI>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSDKDeploymentManagerInitialize>false</WindowsAppSDKDeploymentManagerInitialize>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <Platforms>x64;ARM64</Platforms>
+    <AssemblyName>AGY-PC</AssemblyName>
+    <RootNamespace>AGY.PC.WinUI</RootNamespace>
+    <Version>2.0.0-beta.1</Version>
+    <ApplicationIcon>Assets/AGY.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AGY.PC.Core/AGY.PC.Core.csproj"/>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4"/>
+    <Content Include="Assets/Mark.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets/AGY.ico" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+</Project>

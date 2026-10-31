@@ -1,10 +1,24 @@
-# AGY - PC 1.0.0 验证记录
+# 2.0.0-beta.1 验证
 
-- 构建主机：Linux ARM64，微软官方 .NET SDK 10.0.403，Windows Desktop / .NET runtime 10.0.14。
-- 原生客户端：WPF，无 WebView、Electron 或浏览器包装。C# 核心与 Windows 界面实际编译通过。
-- Windows x64 自包含发布：`dotnet publish src/AGY.PC.Windows -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true`。PE 头为 AMD64 `0x8664`。
-- 19 项跨平台可执行测试通过：HTTPS/凭据校验、Windows 文件名、整个目录相对标签、模型/思考强度回退、持久化失败不覆盖、账号隔离、UTF-8/SSE 分帧、不完整 SSE、HTTP 502/重定向错误、下载字节一致、上传中文文件名与字节一致、超限上传不出网、审批归属与单次决策、配置与输出模式重启恢复、旧历史不覆盖默认值、首次新对话不继承旧 Turbo、目录引用只传路径、丢失回包后核对不重发、明确重试保持请求 ID、磁盘写失败不发送、服务器换账号阻止操作。部分检查组合在一个测试中。
-- 使用本客户端相同的 .NET 网络代码，对现有公网网关只读检查成功：status、13 个模型变体 / 5 个模型组、2 个额度组、文件浏览。未输出密钥或文件内容，未对真实账号发送模型任务。
-- 使用假网关验证会话发送及审批逻辑；未声称已执行真实账号的任务/审批端到端测试。
-- 未在 Windows 上运行：exe 启动、窗口布局与 DPI、DPAPI、拖放、剪贴板、图片解码、原生打开/保存对话框及中文输入法仍需 Windows 实测。ARM64 Windows 提供构建入口，此次只发布 x64。
-- 未推送代码、未创建 GitHub 仓库或启动 Actions；未重启、修改或切换线上 AGY 服务及账号。Windows 客户端复用现有入口。
+## 本次实际完成
+
+- Microsoft Windows App SDK 2.6.4 的真实 WinUI 3 工程，移除当前 WPF 前端，不是 WPF 换名称。
+- Linux ARM64 / .NET SDK 10.0.403 上：22 项核心测试通过；23 项 Python 网关回归通过。
+- 核心新增覆盖：项目 ZIP 提取、中文及二进制保留、不覆盖已有目录、拒绝穿越/符号链接/大小写冲突/Windows 设备文件名；阻止在 ARM Linux 上误跑 Windows 或服务器目标。
+- `dotnet msbuild ... -t:Compile -p:WindowsAppSDKSelfContained=false` 完成 WinUI 托管代码类型编译。此操作只检查 C# 编译，不是最终 Windows 打包。
+- 完整 WinUI 构建实际在本机失败于 Windows SDK 的 `mt.exe` / `MakePri.exe` 平台工具；没有把禁用这些步骤后的文件作为可分发 WinUI exe。
+- Windows x64 本机构建入口完成交叉编译。入口自身在 Windows 上的 SDK 安装、完整 WinUI 编译、UI 截图尚未在本服务器执行。
+
+## 尚未完成，必须在 Windows 节点执行
+
+- WinUI 完整打包、激活、DPAPI、原生选择器、DPI/中文输入法与系统主题运行检查。
+- 真正的 `--ui-check` 会生成浅色/深色登录页 PNG 与报告；只有用户 Windows 构建节点实际执行后才会存在。截图生成不是全部交互验收。
+- PowerShell 实际构建、WSL 发行版调用、x86_64 架构验证与 WSL 进程组取消路径的真实执行。
+- 从服务器下载项目到 Windows 的端到端文件同步与产物回传。
+
+混合工作流是明确确认后执行的本机 / WSL 构建及服务器 AGY 会话委派，不是无人值守跨设备调度器。未增加自动执行本机命令的远程接口。
+
+
+## 服务器实际验证
+
+配套项目同步接口已在空闲网关部署。公网 status 和 `/snapshot` 返回 200；临时空会话导出本项目 ZIP，验证目录排除与完整性后已删除。没有向真实账号发送模型任务，没有改变 Google 登录、连接密钥或隧道。

@@ -6,3 +6,6 @@ dist/
 *.suo
 state.bin
 *.partial
+
+__pycache__/
+*.pyc

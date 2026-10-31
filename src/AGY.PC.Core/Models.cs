@@ -15,7 +15,7 @@ public sealed record Credentials(string Address, string Token) {
         return new(url.GetLeftPart(UriPartial.Authority), token.Trim());
     }
 }
-public sealed record Capabilities(bool SeparateEffort, bool NativeApprovals, bool Artifacts, bool FileBrowser, bool DirectoryMentions);
+public sealed record Capabilities(bool SeparateEffort, bool NativeApprovals, bool Artifacts, bool FileBrowser, bool DirectoryMentions, bool ProjectSnapshots=false);
 public sealed record GatewayStatus(string Name, int Version, string[] Roots, string DefaultModel, string AccountProfile, Capabilities Capabilities);
 public sealed record ModelVariant(string Id, string Effort);
 public sealed record ModelFamily(string Id, string Name, ModelVariant[] Variants, string[] Efforts, string DefaultEffort) { public override string ToString() => Name; }
@@ -59,6 +59,8 @@ public sealed record TaskSettings(string Model, string Effort, string ApprovalMo
 public sealed class ProfileState {
     public TaskSettings? Settings { get; set; }
     public string Presentation { get; set; } = "原版";
+    public string Theme { get; set; } = "Default";
+    public BuildPlan? Build { get; set; }
     public PendingSend? Pending { get; set; }
     public Dictionary<string, Draft> Drafts { get; set; } = [];
 }
