@@ -38,12 +38,12 @@ internal static class Program {
                 if(process.ExitCode!=0){await CollectAsync(project,output);throw new IOException("WinUI 启动失败："+StartupChecks.ExitDescription(process.ExitCode)+"。请查看 "+Path.Combine(LogFolder,"startup-diagnostics","diagnostic-summary.txt"));}
             }
             var screenshots=Path.Combine(output,"ui-check");
-            if(!File.Exists(Path.Combine(screenshots,"login-light.png"))||!File.Exists(Path.Combine(screenshots,"login-dark.png"))||!File.Exists(Path.Combine(screenshots,"report.json")))
+            if(!File.Exists(Path.Combine(screenshots,"login-light.png"))||!File.Exists(Path.Combine(screenshots,"login-dark.png"))||!File.Exists(Path.Combine(screenshots,"workspace-dark.png"))||!File.Exists(Path.Combine(screenshots,"conversation-dark.png"))||!File.Exists(Path.Combine(screenshots,"files-dark.png"))||!File.Exists(Path.Combine(screenshots,"workspace-narrow.png"))||!File.Exists(Path.Combine(screenshots,"report.json")))
                 {await CollectAsync(project,output);throw new IOException("未生成界面截图。请查看 startup-diagnostics/diagnostic-summary.txt。");}
             File.WriteAllText(Path.Combine(output,"windows-build-report.json"),JsonSerializer.Serialize(new{builtOnWindows=true,uiCaptureCompleted=true,visualReviewStillRequired=true,sdk="10.0.403",buildID=Path.GetFileName(LogFolder),exeSHA256=Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(exe)))},Wire.Json));
             foreach(var name in new[]{"README.md","THIRD_PARTY_NOTICES.md"})File.Copy(Path.Combine(project,name),Path.Combine(output,name),true);
             var licenses=Path.Combine(output,"licenses");Directory.CreateDirectory(licenses);foreach(var license in Directory.GetFiles(Path.Combine(project,"docs","licenses")))File.Copy(license,Path.Combine(licenses,Path.GetFileName(license)),true);
-            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.4-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
+            var archive=Path.Combine(LogFolder,"AGY-PC-2.0.0-beta.5-win-x64.zip");ZipFile.CreateFromDirectory(output,archive,CompressionLevel.Optimal,false);
             Say("编译和截图生成完成。截图需要人工确认，不等同于全部交互验收。");Say("运行目录："+output);Say("运行包："+archive);Say("构建日志："+Path.Combine(LogFolder,"build.log"));
             Process.Start(new ProcessStartInfo("explorer.exe",screenshots){UseShellExecute=true});
             Process.Start(new ProcessStartInfo(exe){UseShellExecute=true,WorkingDirectory=output});return 0;

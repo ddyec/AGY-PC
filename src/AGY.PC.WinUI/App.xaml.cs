@@ -21,7 +21,7 @@ public sealed partial class DesktopApp : Application {
         try {
             var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AGY-PC", "state.bin");
             IStateStore store = uiCheck ? new ProbeStore() : new ProtectedStateStore(path, Dpapi.Protect, Dpapi.Unprotect);
-            var workspace = new Workspace(store);
+            var workspace = uiCheck ? new Workspace(store,c=>new GatewayClient(c,new VisualPreview())) : new Workspace(store);
             StartupLog.Mark("workspace.ready", uiCheck ? "isolated visual check; no stored credentials or network" : "current-user state");
             StartupLog.Mark("window.construct");
             window = new MainWindow(workspace, uiCheck);

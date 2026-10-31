@@ -1,22 +1,22 @@
 {
-  "version": "2.0.0-beta.4",
+  "version": "2.0.0-beta.5",
   "uiFramework": "WinUI 3",
   "windowsAppSDK": "2.6.4",
   "dotnetSDK": "10.0.403",
   "coreTestsPassed": 32,
   "gatewayTestsPassed": 23,
-  "winuiManagedCompile": "beta.4 C# type check passed; generated XAML contract stub used only in temporary check harness",
-  "fullWindowsWinUIPublish": "beta.4 pending Windows execution",
-  "windowsUiScreenshots": "beta.4 Windows check asserts title bar properties; root PNG excludes native caption",
+  "winuiManagedCompile": "beta.5 C# type check passed; temporary generated-contract stub not shipped",
+  "fullWindowsWinUIPublish": "beta.5 pending Windows execution",
+  "windowsUiScreenshots": "beta.5 capture includes offline connected pages and narrow layout; pending actual Windows run",
   "builderCrossCompiled": "win-x64",
   "releaseAssetKind": "Windows build entry, not a prebuilt WinUI client",
   "projectSnapshotPublicHTTP": 200,
   "actionsRun": false,
   "realModelTasksSent": 0,
   "productionGateway": "idle restart; project snapshot enabled; same account/key/tunnel",
-  "createdUTC": "2026-10-31T11:35:12.338907+00:00",
-  "builderExeSHA256": "1243ea41c2a0a7269be9cda498fd7597eb5adf678d9fedde39f5701bf30cef36",
-  "lastFix": "Native title bar theme synchronization and persistent, proxy-aware DoH",
+  "createdUTC": "2026-10-31T12:00:16.354711+00:00",
+  "builderExeSHA256": "6a72347405e06c6cbaf8faeb0daa6c13f75399c327b192200ac9c4c0bb46e161",
+  "lastFix": "Rebuilt actual desktop shell, chat composer, file browser and grouped settings/build UI",
   "resourceGraph": {
     "before": {
       "Assets/AGY.ico": 2,
@@ -32,5 +32,6 @@
     ],
     "duplicateGuardInjection": "rejected"
   },
-  "windowsStartupConfirmed": "beta.3 user screenshot shows running login window"
+  "windowsStartupConfirmed": "beta.4 user screenshot shows connected WinUI client; beta.5 pending",
+  "coreTestsRerun": false
 }

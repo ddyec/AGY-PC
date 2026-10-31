@@ -15,13 +15,13 @@ $env:AGY_PC_DIAGNOSTICS_DIR=$diagnostics
 $process=Start-Process -FilePath "$output/AGY-PC.exe" -ArgumentList '--ui-check' -WorkingDirectory $output -PassThru
 if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'WinUI 界面检查超时。' }
 if ($process.ExitCode -ne 0) { & "$PSScriptRoot/collect-winui-diagnostics.ps1" -RuntimeDirectory $output -Destination $diagnostics -NoLaunch -ExpectXaml; throw 'WinUI 界面检查失败，请查看 startup-diagnostics/diagnostic-summary.txt。' }
-foreach ($image in @('login-light.png','login-dark.png','report.json')) {
+foreach ($image in @('login-light.png','login-dark.png','workspace-dark.png','conversation-dark.png','files-dark.png','workspace-narrow.png','report.json')) {
     if (-not (Test-Path "$output/ui-check/$image")) { throw "缺少界面检查结果：$image。不是已验证运行包。" }
 }
 Copy-Item README.md "$output/使用说明.md" -Force
 Copy-Item THIRD_PARTY_NOTICES.md $output -Force
 Copy-Item docs/licenses -Destination $output -Recurse -Force
-$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.4-$Runtime.zip"
+$archive=Join-Path (Get-Location) "dist/AGY-PC-2.0.0-beta.5-$Runtime.zip"
 if (Test-Path $archive) { Remove-Item $archive }
 Compress-Archive -Path "$output/*" -DestinationPath $archive
 Write-Host "Windows 构建完成：$archive"

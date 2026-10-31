@@ -13,8 +13,15 @@ internal sealed class BuildPane {
         var buttons=new StackPanel{Orientation=Orientation.Horizontal,Spacing=10};buttons.Children.Add(Ui.Button("同步服务器项目到新副本",()=>window.Run(SynchronizeAsync)));buttons.Children.Add(Ui.Button("选择本机目录",()=>window.Run(async()=>{var selected=await window.PickFolderAsync();if(selected is not null)folder.Text=selected;})));
         var actions=new Grid{ColumnSpacing=10,RowSpacing=10};actions.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});actions.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});actions.RowDefinitions.Add(new(){Height=GridLength.Auto});actions.RowDefinitions.Add(new(){Height=GridLength.Auto});actions.Children.Add(Ui.Button("检查并执行",()=>window.Run(StartAsync),true));actions.Children.Add(Ui.Button("停止本机 / WSL 构建",Cancel));actions.Children.Add(Ui.Button("回传构建日志",()=>window.Run(UploadLogAsync)));actions.Children.Add(Ui.Button("回传产物文件",()=>window.Run(UploadArtifactsAsync)));
         for(var index=0;index<actions.Children.Count;index++){Grid.SetRow((FrameworkElement)actions.Children[index],index/2);Grid.SetColumn((FrameworkElement)actions.Children[index],index%2);}
-        var panel=Ui.Stack(Ui.Text("混合构建",28),Ui.Caption("Windows 程序在本机编译，Linux x64 进入 WSL，网页与服务端任务留在服务器。不会把 ARM64 服务器伪装成 x64。"),target,folder,buttons,distribution,command,Ui.Caption("执行前会展示目标、目录和完整命令。服务器构建通过当前 AGY 会话审批；本机 / WSL 命令需要你单独确认。同步总是写入新目录，不覆盖本机改动。"),actions,log,Ui.Caption("回传日志和产物不会自动发起新任务；可在“已上传”中查看并引用。单个回传文件目前上限 25 MiB。WSL 内部独立工程的大文件同步和无人值守远程构建调度尚未提供。"));
-        panel.MaxWidth=1000;View=new(){Content=panel,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Padding=new Thickness(8)};
+        var projectSection=Ui.Stack(Ui.Title("1  选择执行位置",17),target,folder,buttons,distribution);projectSection.Spacing=14;
+        var commandSection=Ui.Stack(Ui.Title("2  构建与回传",17),command,actions);commandSection.Spacing=14;
+        var output=new Expander{Header="构建输出",Content=log,HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Stretch};
+        log.TextChanged+=(_,_)=>{if(!string.IsNullOrEmpty(log.Text))output.IsExpanded=true;};
+        var help=new Expander{Header="同步与执行说明",Content=Ui.Caption("同步会创建独立本机副本。Windows 在本机运行，Linux x64 使用 WSL，服务器命令交给当前 AGY 会话执行。每次执行前确认位置和命令。单个回传文件上限 25 MiB。"),HorizontalAlignment=HorizontalAlignment.Stretch};
+        var panel=Ui.Stack(Ui.Title("混合构建",24),Ui.Caption("选对执行位置，继续同一个项目。"),Ui.Card(projectSection),Ui.Card(commandSection),output,help);panel.Spacing=20;
+        panel.MaxWidth=860;panel.Margin=new Thickness(0,12,0,16);View=new(){Content=panel,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
+        void TargetChanged(){distribution.Visibility=Target==BuildTarget.WslLinuxX64?Visibility.Visible:Visibility.Collapsed;folder.Visibility=buttons.Visibility=Target==BuildTarget.Server?Visibility.Collapsed:Visibility.Visible;}
+        target.SelectionChanged+=(_,_)=>TargetChanged();TargetChanged();
         View.Loaded+=(_,_)=>{if(work.Build is {} saved){target.SelectedIndex=saved.Target switch{BuildTarget.Windows=>0,BuildTarget.WslLinuxX64=>1,_=>2};folder.Text=saved.Directory;command.Text=saved.Command;distribution.Text=saved.Distribution??"";}};
     }
     private BuildTarget Target=>target.SelectedIndex switch{1=>BuildTarget.WslLinuxX64,2=>BuildTarget.Server,_=>BuildTarget.Windows};
