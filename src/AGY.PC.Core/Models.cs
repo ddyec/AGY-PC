@@ -93,7 +93,7 @@ public sealed record TaskSettings(string Model, string Effort, string ApprovalMo
 }
 public sealed class ProfileState {
     public TaskSettings? Settings { get; set; }
-    public string Presentation { get; set; } = "原版";
+    public string Presentation { get; set; } = "步骤摘要";
     public string Theme { get; set; } = "Default";
     public BuildPlan? Build { get; set; }
     public PendingSend? Pending { get; set; }
@@ -131,9 +131,9 @@ public static class FileRules {
     public static string CleanText(string? value) =>
         string.IsNullOrEmpty(value) ? "" : value.Replace("\uFFFC", "").Replace("\uFFFD", "").Trim();
     public static string PresentationLabel(string value) => value switch {
-        "步骤摘要" => "步骤摘要 · 思考过程",
-        "结论优先" => "结论优先 · 折叠过程",
-        _ => "原版 · 全部内容"
+        "步骤摘要" => "思考摘要 · 自动折叠工具",
+        "结论优先" => "结论优先 · 折叠思考与工具",
+        _ => "原版 · 展示全部内容"
     };
     public static bool Within(string path, string root) => path.StartsWith('/') && !path.Split('/').Contains("..")
         && (path.TrimEnd('/') == root.TrimEnd('/') || path.StartsWith(root.TrimEnd('/') + "/", StringComparison.Ordinal));

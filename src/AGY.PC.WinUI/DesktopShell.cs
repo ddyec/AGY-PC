@@ -21,8 +21,6 @@ internal sealed class DesktopShell {
     private readonly TextBlock location = Ui.Text("工作区", 12.5);
     private readonly TextBlock pageName = Ui.Title("对话", 16);
     private readonly TextBlock chatHeading;
-    private readonly Button policyButton;
-    private readonly UIElement? presentationControl;
     private bool changing, narrow;
     internal string Page { get; private set; } = "chat";
     internal event Action<string>? Navigated;
@@ -32,15 +30,11 @@ internal sealed class DesktopShell {
         TextBox search,
         TextBlock connection,
         TextBlock heading,
-        TextBlock taskSummary,
         Action newChat,
         Action chooseProject,
-        Action openTaskOptions,
-        UIElement? chatPresentationControl = null,
         Action? refreshHistory = null,
         Action? openNetwork = null) {
         chatHeading = heading;
-        presentationControl = chatPresentationControl;
         chatHeading.FontSize = 16;
         chatHeading.FontWeight = new() { Weight = 600 };
         chatHeading.TextWrapping = TextWrapping.NoWrap;
@@ -205,19 +199,7 @@ internal sealed class DesktopShell {
         var toggle = Ui.Icon(Symbol.GlobalNavigationButton, "展开或收起会话侧栏", () => View.IsPaneOpen = !View.IsPaneOpen);
         top.Children.Add(toggle);
 
-        taskSummary.FontSize = 12;
-        taskSummary.TextWrapping = TextWrapping.NoWrap;
-        policyButton = Ui.Button("任务策略", openTaskOptions);
-        policyButton.Content = taskSummary;
-        policyButton.MinHeight = 28;
-        policyButton.Height = 28;
-        policyButton.Padding = new Thickness(10, 3, 10, 3);
-        policyButton.CornerRadius = new CornerRadius(6);
-        ToolTipService.SetToolTip(policyButton, "点击配置模型、思考强度与审批策略");
-
-        var titleStack = presentationControl is not null
-            ? Ui.Inline(chatHeading, pageName, policyButton, presentationControl)
-            : Ui.Inline(chatHeading, pageName, policyButton);
+        var titleStack = Ui.Inline(chatHeading, pageName);
         titleStack.Spacing = 10;
         Grid.SetColumn(titleStack, 1);
         top.Children.Add(titleStack);
@@ -257,8 +239,6 @@ internal sealed class DesktopShell {
         changing = false;
         var isChat = page == "chat";
         chatHeading.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
-        policyButton.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
-        if (presentationControl is not null) presentationControl.Visibility = isChat ? Visibility.Visible : Visibility.Collapsed;
         pageName.Visibility = isChat ? Visibility.Collapsed : Visibility.Visible;
         pageName.Text = page switch {
             "files" => "文件与产物",
@@ -278,9 +258,9 @@ internal sealed class DesktopShell {
     }
 
     internal void Resize(double width) {
-        location.MaxWidth = Math.Clamp(width - 520, 72, 200);
-        chatHeading.MaxWidth = Math.Clamp(width - 560, 120, 420);
-        var next = width < 960;
+        location.MaxWidth = Math.Clamp(width - 420, 96, 260);
+        chatHeading.MaxWidth = Math.Clamp(width - 460, 180, 680);
+        var next = width < 760;
         if (next == narrow) return;
         narrow = next;
         View.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;

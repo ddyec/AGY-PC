@@ -113,11 +113,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
             scope = credentials.Address.TrimEnd('/') + "#" + status.AccountProfile;
             profile = state.Profiles.GetValueOrDefault(scope) ?? new();
             var saved = profile.Settings;
-            var validated = (saved ?? ServerDefaults()).Validate(Families,status.Roots,status.DefaultModel);
-            if (saved is not null && !string.IsNullOrWhiteSpace(saved.Model) && Families.All(f => f.Id != saved.Model)) {
-                validated = validated with { Model = saved.Model, Effort = saved.Effort };
-            }
-            Settings = validated;
+            Settings = (saved ?? ServerDefaults()).Validate(Families,status.Roots,status.DefaultModel);
             Notice = null;
             if (Settings.Workspace != status.Roots[0]) {
                 try { await Api.JsonAsync<FileListing>("workspace",query:new() { ["cwd"] = Settings.Workspace }); }
@@ -164,12 +160,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public void NewConversation() {
         if (Pending is not null) throw new InvalidOperationException("请先核对或重试待确认发送。");
         ++generation; watch?.Cancel(); Selected = null;
-        var saved = profile.Settings;
-        var validated = (saved ?? ServerDefaults()).Validate(Families,Status!.Roots,Status.DefaultModel);
-        if (saved is not null && !string.IsNullOrWhiteSpace(saved.Model) && Families.All(f => f.Id != saved.Model)) {
-            validated = validated with { Model = saved.Model, Effort = saved.Effort };
-        }
-        Settings = validated;
+        Settings = (profile.Settings ?? ServerDefaults()).Validate(Families,Status!.Roots,Status.DefaultModel);
         Notice = null; Publish();
     }
     public async Task SelectAsync(string id, bool forceRefresh = false) {
@@ -220,17 +211,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         if (Pending is not null) throw new InvalidOperationException("请先核对待确认发送。");
         if (Status is null) throw new InvalidOperationException("请先连接。");
         var normalizedWorkspace = NormalizeWorkspacePath(next.Workspace);
-        var modelId = next.Model.Trim();
-        if (string.IsNullOrEmpty(modelId)) throw new InvalidOperationException("请选择或输入有效的模型标识。");
-        var matchedFamily = Families.FirstOrDefault(f => f.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase) || f.Name.Equals(modelId, StringComparison.OrdinalIgnoreCase));
-        var effort = next.Effort;
-        if (matchedFamily is not null) {
-            modelId = matchedFamily.Id;
-            if (!matchedFamily.Efforts.Contains(effort)) effort = matchedFamily.DefaultEffort;
-        }
-        var approvalMode = next.ApprovalMode is "review" or "turbo" ? next.ApprovalMode : "review";
-        var execMode = next.Mode is "plan" or "accept-edits" ? next.Mode : "plan";
-        next = new(modelId, effort, approvalMode, execMode, normalizedWorkspace);
+        next = (next with { Workspace = normalizedWorkspace }).Validate(Families, Status.Roots, Status.DefaultModel);
 
         // Always persist user preference immediately so model & strategy choices are remembered across sessions and restarts.
         profile.Settings = next;

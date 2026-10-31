@@ -235,13 +235,14 @@ static class Program {
             await work.SteerNowAsync();
             Assert(fake.Stops==1&&fake.Submissions==1&&work.Pending is null&&work.Draft.Text=="","stopped and steered in one step");
         });
-        await Test("Free specification of custom model ID, workspace path, custom DoH URL, FlClash proxy and custom skills persist across restarts",async()=>{
+        await Test("Catalog model selection, workspace path, custom DoH URL, FlClash proxy and custom skills persist across restarts",async()=>{
             var store=new MemoryStore();var fake=new Fake();
             using(var work=new Workspace(store,_=>new(Creds,fake))){
                 work.SetNetwork(new(true,"Custom",true,"https://edge.1molchuan.top/linuxdo","http://127.0.0.1:7890"));
                 await work.ConnectAsync(Creds);
-                await work.ConfigureAsync(new("claude-sonnet-4-5-custom","xhigh","turbo","accept-edits","subproject/app"));
-                Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.Workspace=="/work/subproject/app","custom model and relative workspace normalized");
+                Assert(work.Presentation=="步骤摘要"&&FileRules.PresentationLabel(work.Presentation)=="思考摘要 · 自动折叠工具","default presentation is thinking summary with auto-collapsed tools");
+                await work.ConfigureAsync(new("gemini","high","turbo","accept-edits","subproject/app"));
+                Assert(work.Settings.Model=="gemini"&&work.Settings.Effort=="high"&&work.Settings.Workspace=="/work/subproject/app","catalog model and relative workspace normalized");
                 work.SaveCustomSkill("/review-ui","UI 审查技能","请审查当前 UI 设计：",".agents/skills/ui/SKILL.md");
                 Assert(work.CustomSkills.Count==1,"custom skill saved");
                 work.ApplySkill(work.CustomSkills[0]);
@@ -252,7 +253,7 @@ static class Program {
                 work.SetNetwork(new(false,"Cloudflare",true,null,"direct"));
                 Assert(work.Network.ProxyUrl=="direct","direct proxy override accepted");
                 await work.ConnectAsync(Creds);
-                Assert(work.Settings.Model=="claude-sonnet-4-5-custom"&&work.Settings.Effort=="xhigh"&&work.Settings.ApprovalMode=="turbo"&&work.CustomSkills.Count==1,"custom model and skills remembered across restart");
+                Assert(work.Settings.Model=="gemini"&&work.Settings.Effort=="high"&&work.Settings.ApprovalMode=="turbo"&&work.CustomSkills.Count==1,"catalog model and skills remembered across restart");
             }
         });
         await Test("RFC 8484 wireformat DoH query and compressed response parsing work for standard browser DoH endpoints",async()=>{

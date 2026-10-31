@@ -16,19 +16,13 @@ internal sealed class MainWindow : Window {
     private readonly Grid root = Ui.Root(), host = new();
     private readonly DesktopShell shell;
     private readonly Grid conversationBody = new();
-    private readonly TextBlock quickModelLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12.5 };
-    private readonly TextBlock headerPresentationLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12 };
-    private readonly TextBlock composerPresentationLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12.5 };
-    private readonly TextBlock composerHint = Ui.Caption("Ctrl + Enter 发送   ·   Enter 换行   ·   运行中支持「对话排队」与「立即引导」");
+    private readonly TextBlock quickModelLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center };
     private readonly ScrollViewer approvalScroll = new() { MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         referenceScroll = new() { MaxHeight = 96, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         queueScroll = new() { MaxHeight = 156, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly Button quickModel = new() { MinHeight = 32, Height = 32, Padding = new Thickness(10, 4, 10, 4), CornerRadius = new CornerRadius(8) };
-    private readonly Button headerPresentationBtn = new() { MinHeight = 28, Height = 28, Padding = new Thickness(10, 3, 10, 3), CornerRadius = new CornerRadius(6) };
-    private readonly Button composerPresentationBtn = new() { MinHeight = 32, Height = 32, Padding = new Thickness(10, 4, 10, 4), CornerRadius = new CornerRadius(8) };
-    private readonly TextBlock taskSummary = Ui.Caption("选择模型与任务方式");
     private UIElement welcome = null!;
-    private string historySignature = "", effortFamily = "";
+    private string historySignature = "", effortFamily = "", dismissedNoticeKey = "";
     private ModelFamily[]? catalog;
     private readonly InfoBar notice = new() { IsClosable = true };
     private readonly TextBox composer = new() {
@@ -38,9 +32,9 @@ internal sealed class MainWindow : Window {
         MaxHeight = 180,
         FontSize = 14,
         Padding = new Thickness(2, 2, 2, 8),
-        PlaceholderText = "描述任务，或输入 @ 引用文件与文件夹…"
+        PlaceholderText = "输入消息，或输入 @ 引用文件…"
     };
-    private readonly StackPanel messages = new() { Spacing = 18, MaxWidth = 840, HorizontalAlignment = HorizontalAlignment.Stretch },
+    private readonly StackPanel messages = new() { Spacing = 18, MaxWidth = 880, HorizontalAlignment = HorizontalAlignment.Stretch },
         references = new() { Orientation = Orientation.Horizontal, Spacing = 6 },
         approvals = new() { Spacing = 8 },
         pending = new() { Spacing = 8 },
@@ -53,8 +47,7 @@ internal sealed class MainWindow : Window {
         mode = new() { Header = "执行方式", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
         theme = new() { Header = "界面主题", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
         presentation = new() { Header = "输出展示方式", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-    private readonly TextBox customModelBox = new() { Header = "自由指定模型 ID（可选，留空则使用上方列表所选模型）", PlaceholderText = "如 gemini-2.5-pro / claude-sonnet-4-5…", CornerRadius = new CornerRadius(8) },
-        customWorkspaceBox = new() { Header = "自由指定服务器工作区目录路径", PlaceholderText = "/home/ubuntu/project", CornerRadius = new CornerRadius(8) };
+    private readonly TextBox customWorkspaceBox = new() { Header = "服务器工作区目录路径", PlaceholderText = "/home/ubuntu/project", CornerRadius = new CornerRadius(8) };
     private readonly TextBox address = new() { Header = "服务器地址", Text = "https://agy.yectech.uk", PlaceholderText = "https://你的服务器", CornerRadius = new CornerRadius(8) };
     private readonly PasswordBox token = new() { Header = "连接密钥", PasswordRevealMode = PasswordRevealMode.Peek, CornerRadius = new CornerRadius(8) };
     private readonly ProgressRing progress = new() { IsActive = false, Width = 20, Height = 20 };
@@ -78,7 +71,20 @@ internal sealed class MainWindow : Window {
         this.work = work;
         this.uiCheck = uiCheck;
         Title = "AGY - PC";
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 860));
+        try {
+            var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Primary)?.WorkArea;
+            if (area is { Width: > 0, Height: > 0 } w) {
+                var targetW = Math.Clamp((int)(w.Width * 0.86), 1440, 2240);
+                var targetH = Math.Clamp((int)(w.Height * 0.86), 900, 1360);
+                var posX = w.X + Math.Max(0, (w.Width - targetW) / 2);
+                var posY = w.Y + Math.Max(0, (w.Height - targetH) / 2);
+                AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(posX, posY, targetW, targetH));
+            } else {
+                AppWindow.Resize(new Windows.Graphics.SizeInt32(1680, 980));
+            }
+        } catch {
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(1680, 980));
+        }
         try { AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AGY.ico")); } catch (Exception e) { StartupLog.Error("window.icon.optional", e); }
         try { if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported()) SystemBackdrop = new MicaBackdrop(); } catch (Exception e) { StartupLog.Error("window.mica.optional", e); }
 
@@ -88,6 +94,7 @@ internal sealed class MainWindow : Window {
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         notice.Margin = new Thickness(16, 8, 16, 0);
+        notice.Closed += (_, _) => dismissedNoticeKey = CurrentNoticeKey();
         root.Children.Add(notice);
         Grid.SetRow(host, 1);
         root.Children.Add(host);
@@ -101,7 +108,7 @@ internal sealed class MainWindow : Window {
         send.Padding = new Thickness(14, 4, 14, 4);
         send.CornerRadius = new CornerRadius(8);
 
-        queueBtn = Ui.ToolbarButton("对话排队", Symbol.Clock, "加入对话排队：当前回复完成后自动按顺序发送（运行中按 Ctrl+Enter）", () => Run(async () => {
+        queueBtn = Ui.ToolbarButton("对话排队", Symbol.Clock, "当前回复完成后自动按顺序发送（Ctrl+Enter）", () => Run(async () => {
             FlushDraft();
             following = true;
             await work.EnqueueAsync();
@@ -119,23 +126,24 @@ internal sealed class MainWindow : Window {
         ToolTipService.SetToolTip(steerBtn, "立即打断当前生成，直接按新输入的方向继续引导对话（Ctrl+Shift+Enter）");
 
         stop = Ui.ToolbarButton("停止", Symbol.Stop, "停止当前生成", () => Run(work.StopAsync));
-        save = Ui.Action("保存默认配置", Symbol.Accept, () => Run(SaveSettingsAsync), true);
-        latest = Ui.Button("↓ 回到最新消息", () => { following = true; transcript.ChangeView(null, transcript.ScrollableHeight, null); });
+        save = Ui.Action("保存配置", Symbol.Accept, () => Run(SaveSettingsAsync), true);
+        latest = Ui.Button("↓ 回到最新消息", () => { following = true; transcript.ChangeView(null, transcript.ScrollableHeight, null); }, true);
         latest.HorizontalAlignment = HorizontalAlignment.Center;
+        latest.VerticalAlignment = VerticalAlignment.Bottom;
+        latest.Margin = new Thickness(0, 0, 0, 14);
+        latest.Padding = new Thickness(16, 6, 16, 6);
+        latest.CornerRadius = new CornerRadius(18);
         latest.Visibility = Visibility.Collapsed;
 
-        ConfigurePresentationButtons();
+        ConfigureQuickModelButton();
 
         shell = new DesktopShell(
             history,
             historySearch,
             connection,
             heading,
-            taskSummary,
             () => { work.NewConversation(); ChatPage(); Render(); },
             () => Run(ChooseWorkspaceAsync),
-            () => Run(TaskOptionsAsync),
-            headerPresentationBtn,
             () => Run(work.ReloadAsync),
             () => Run(NetworkSettingsAsync));
         host.Children.Add(shell.View);
@@ -163,7 +171,6 @@ internal sealed class MainWindow : Window {
             }
         };
 
-        quickModel.Click += (_, _) => Run(TaskOptionsAsync);
         composer.TextChanged += (_, _) => {
             if (rendering || !work.Connected) return;
             try {
@@ -206,7 +213,6 @@ internal sealed class MainWindow : Window {
         };
         model.SelectionChanged += (_, _) => {
             if (rendering) return;
-            customModelBox.Text = "";
             Efforts(work.Settings.Effort);
             AutoSaveSettings();
         };
@@ -266,33 +272,78 @@ internal sealed class MainWindow : Window {
 
     internal sealed record Choice(string Id, string Name) { public override string ToString() => Name; }
 
-    private MenuFlyout CreatePresentationFlyout() {
-        var flyout = new MenuFlyout();
-        foreach (var (id, title) in new[] {
-            ("原版", "原版 · 展示全部内容（思考、步骤、工具与结论）"),
-            ("步骤摘要", "步骤摘要 · 展示思考过程与分步折叠摘要"),
-            ("结论优先", "结论优先 · 顶部直出结论，折叠中间思考与工具")
-        }) {
-            var item = new MenuFlyoutItem { Text = title };
-            var modeId = id;
-            item.Click += (_, _) => {
-                work.SetPresentation(modeId);
-                signature = "";
-                Render();
-            };
-            flyout.Items.Add(item);
+    private void ConfigureQuickModelButton() {
+        var chevron = Ui.FluentGlyph("\uE70E", 10);
+        chevron.Opacity = 0.75;
+        var contentRow = Ui.Inline(quickModelLabel, chevron);
+        contentRow.Spacing = 6;
+        quickModel.Content = contentRow;
+        ToolTipService.SetToolTip(quickModel, "选择模型与思考强度");
+
+        var flyoutModels = new ComboBox {
+            Header = "模型",
+            DisplayMemberPath = "Name",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 240,
+            CornerRadius = new CornerRadius(8)
+        };
+        var flyoutEfforts = new ComboBox {
+            Header = "思考强度",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 240,
+            CornerRadius = new CornerRadius(8)
+        };
+        var syncingFlyout = false;
+
+        void PopulateFlyoutEfforts(string preferredEffort) {
+            if (flyoutModels.SelectedItem is not ModelFamily fam) return;
+            var items = fam.Efforts.Select(e => new Choice(e, FileRules.EffortLabel(e))).ToArray();
+            flyoutEfforts.ItemsSource = items;
+            flyoutEfforts.SelectedItem = items.FirstOrDefault(x => x.Id == preferredEffort)
+                ?? items.FirstOrDefault(x => x.Id == fam.DefaultEffort)
+                ?? items.FirstOrDefault();
         }
-        return flyout;
-    }
 
-    private void ConfigurePresentationButtons() {
-        headerPresentationBtn.Content = headerPresentationLabel;
-        headerPresentationBtn.Flyout = CreatePresentationFlyout();
-        ToolTipService.SetToolTip(headerPresentationBtn, "切换消息展示方式：原版（全部内容） / 步骤摘要（思考过程） / 结论优先");
+        async void ApplyFlyoutSelection() {
+            if (syncingFlyout || !work.Connected || work.Pending is not null) return;
+            if (flyoutModels.SelectedItem is not ModelFamily fam || flyoutEfforts.SelectedItem is not Choice eff) return;
+            try {
+                var next = work.Settings with { Model = fam.Id, Effort = eff.Id };
+                if (next == work.Settings) return;
+                await work.ConfigureAsync(next);
+                Render();
+            } catch (Exception err) {
+                Error(err);
+            }
+        }
 
-        composerPresentationBtn.Content = composerPresentationLabel;
-        composerPresentationBtn.Flyout = CreatePresentationFlyout();
-        ToolTipService.SetToolTip(composerPresentationBtn, "切换回复展示方式：原版 / 步骤摘要（思考过程） / 结论优先");
+        flyoutModels.SelectionChanged += (_, _) => {
+            if (syncingFlyout) return;
+            syncingFlyout = true;
+            PopulateFlyoutEfforts(work.Settings.Effort);
+            syncingFlyout = false;
+            ApplyFlyoutSelection();
+        };
+        flyoutEfforts.SelectionChanged += (_, _) => {
+            if (!syncingFlyout) ApplyFlyoutSelection();
+        };
+
+        var flyoutPanel = Ui.Stack(flyoutModels, flyoutEfforts);
+        flyoutPanel.Spacing = 12;
+        flyoutPanel.MinWidth = 250;
+
+        var flyout = new Flyout {
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft,
+            Content = flyoutPanel
+        };
+        flyout.Opening += (_, _) => {
+            syncingFlyout = true;
+            flyoutModels.ItemsSource = work.Families;
+            flyoutModels.SelectedItem = work.Families.FirstOrDefault(f => f.Id == work.Settings.Model) ?? work.Families.FirstOrDefault();
+            PopulateFlyoutEfforts(work.Settings.Effort);
+            syncingFlyout = false;
+        };
+        quickModel.Flyout = flyout;
     }
 
     private UIElement MakeLogin() {
@@ -419,6 +470,8 @@ internal sealed class MainWindow : Window {
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
         conversationBody.Children.Add(welcome);
+        Canvas.SetZIndex(latest, 10);
+        conversationBody.Children.Add(latest);
         page.Children.Add(conversationBody);
 
         // Sleek Unified Composer Island
@@ -432,14 +485,13 @@ internal sealed class MainWindow : Window {
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
 
-        quickModel.Content = quickModelLabel;
-        conversationBody.SizeChanged += (_, _) => quickModel.MaxWidth = Math.Max(96, Math.Min(240, conversationBody.ActualWidth - 360));
-        quickModel.MaxWidth = 240;
+        conversationBody.SizeChanged += (_, _) => quickModel.MaxWidth = Math.Max(120, Math.Min(280, conversationBody.ActualWidth - 320));
+        quickModel.MaxWidth = 260;
 
         var attachBtn = Ui.ToolbarButton("附件", Symbol.Attach, "上传文件到当前对话", () => Run(UploadAsync));
-        var mentionBtn = Ui.ToolbarButton("@ 引用", null, "引用工作区文件、文件夹或自由指定路径", () => Run(MentionAsync));
-        var skillsBtn = Ui.ToolbarButton("/ 技能与指令", null, "选择 Antigravity 官方斜杠工作流、内置 Skills 或自定义技能", () => Run(SkillsPickerAsync));
-        var actions = Ui.Inline(attachBtn, mentionBtn, skillsBtn, quickModel, composerPresentationBtn);
+        var mentionBtn = Ui.ToolbarButton("@ 引用", null, "引用工作区文件、文件夹或指定路径", () => Run(MentionAsync));
+        var skillsBtn = Ui.ToolbarButton("/ 技能与指令", null, "选择斜杠工作流或 Skills", () => Run(SkillsPickerAsync));
+        var actions = Ui.Inline(attachBtn, mentionBtn, skillsBtn, quickModel);
         actions.Spacing = 6;
         var actionsScroll = new ScrollViewer {
             Content = actions,
@@ -457,16 +509,10 @@ internal sealed class MainWindow : Window {
         input.Spacing = 6;
 
         var box = Ui.Surface(input, "CardBackgroundFillColorDefaultBrush", new Thickness(16, 12, 14, 10), 16);
-        composerHint.FontSize = 11.5;
-        composerHint.Opacity = 0.58;
-        composerHint.HorizontalAlignment = HorizontalAlignment.Center;
-
-        var bottom = Ui.Stack(latest, box, composerHint);
-        bottom.Spacing = 8;
-        bottom.MaxWidth = 840;
-        bottom.HorizontalAlignment = HorizontalAlignment.Stretch;
-        Grid.SetRow(bottom, 1);
-        page.Children.Add(bottom);
+        box.MaxWidth = 880;
+        box.HorizontalAlignment = HorizontalAlignment.Stretch;
+        Grid.SetRow(box, 1);
+        page.Children.Add(box);
 
         return page;
     }
@@ -592,9 +638,7 @@ internal sealed class MainWindow : Window {
         var customHeader = new Grid { ColumnSpacing = 12 };
         customHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         customHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        customHeader.Children.Add(Ui.Stack(
-            Ui.Title("自定义技能与指令（支持自由指定与持久记忆）", 16),
-            Ui.Caption("自由定义常用工作流、专属 SKILL.md 路径或项目提示词模板，保存在当前账号配置中。")));
+        customHeader.Children.Add(Ui.Title("自定义技能与常用指令", 16));
         var addCustomBtn = Ui.Action("新建自定义技能 / 指令", Symbol.Add, () => Run(NewCustomSkillAsync), true);
         Grid.SetColumn(addCustomBtn, 1);
         customHeader.Children.Add(addCustomBtn);
@@ -604,33 +648,31 @@ internal sealed class MainWindow : Window {
         var wsHeader = new Grid { ColumnSpacing = 12 };
         wsHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         wsHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        wsHeader.Children.Add(Ui.Stack(
-            Ui.Title("当前项目工作区 Skills 与规则（SKILL.md / AGENTS.md / GEMINI.md）", 16),
-            Ui.Caption("自动识别服务器项目中的 .agents/skills/、.agent/skills/、AGENTS.md 与 GEMINI.md，一键引用并激活。")));
-        var scanBtn = Ui.Action("扫描当前工作区 Skills 与规则", Symbol.Refresh, () => Run(RefreshWorkspaceSkillsAsync));
+        wsHeader.Children.Add(Ui.Title("当前项目工作区 Skills 与规则（SKILL.md / AGENTS.md / GEMINI.md）", 16));
+        var scanBtn = Ui.Action("扫描当前工作区", Symbol.Refresh, () => Run(RefreshWorkspaceSkillsAsync));
         Grid.SetColumn(scanBtn, 1);
         wsHeader.Children.Add(scanBtn);
         RenderWorkspaceSkills();
         var wsCard = Ui.Card(Ui.Stack(wsHeader, workspaceSkillsHost));
 
-        var builtinStack = Ui.Stack(
-            Ui.Title("Antigravity 官方定制体系与内置 Skills", 16),
-            Ui.Caption("官方内置的 agy-customizations（Skills/Rules/Workflows/MCP 定制指南）与 antigravity-guide（AGY 2.0 完整参考），以及标准模板生成器。"));
+        var builtinStack = Ui.Stack(Ui.Title("Antigravity 官方内置 Skills", 16));
         foreach (var item in AgyCatalog.BuiltinSkills) builtinStack.Children.Add(CreateSkillRowCard(item));
         var builtinCard = Ui.Card(builtinStack);
 
-        var slashStack = Ui.Stack(
-            Ui.Title("Antigravity 官方斜杠工作流（Slash Workflows）", 16),
-            Ui.Caption("官方支持的交互式斜杠指令，点击「填入对话」即可在当前对话中触发对应工作流模式。"));
+        var slashStack = Ui.Stack(Ui.Title("Antigravity 官方斜杠工作流", 16));
         foreach (var item in AgyCatalog.OfficialSlashCommands) slashStack.Children.Add(CreateSkillRowCard(item));
         var slashCard = Ui.Card(slashStack);
 
         var panel = Ui.Stack(customCard, wsCard, builtinCard, slashCard);
         panel.Spacing = 16;
-        panel.MaxWidth = 840;
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
-        panel.Margin = new Thickness(0, 4, 0, 16);
-        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        panel.Margin = new Thickness(0, 4, 12, 16);
+        return new ScrollViewer {
+            Content = panel,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
     }
 
     private UIElement MakeSettings() {
@@ -641,36 +683,32 @@ internal sealed class MainWindow : Window {
         theme.Items.Add(new Choice("Default", "跟随 Windows"));
         theme.Items.Add(new Choice("Light", "浅色"));
         theme.Items.Add(new Choice("Dark", "深色"));
-        presentation.Items.Add(new Choice("原版", "原版 · 展示全部内容"));
-        presentation.Items.Add(new Choice("步骤摘要", "步骤摘要 · 展示思考过程"));
-        presentation.Items.Add(new Choice("结论优先", "结论优先 · 优先展示结论"));
+        presentation.Items.Add(new Choice("步骤摘要", "思考摘要 · 直接展示思考过程，自动折叠工具调用"));
+        presentation.Items.Add(new Choice("结论优先", "结论优先 · 直接展示结论，折叠思考与工具"));
+        presentation.Items.Add(new Choice("原版", "原版 · 展示全部思考、工具与结论"));
 
         var taskButtons = Ui.Inline(save, Ui.Action("刷新可用模型", Symbol.Refresh, () => Run(work.RefreshModelsAsync)));
         var tasks = Ui.Stack(
-            Ui.Title("模型与默认任务策略（自动记忆偏好）", 16),
-            Ui.Caption("切换下拉选项或保存自由指定的模型 ID 后将立即持久记忆；新建对话自动沿用你上次记住的模型与策略。"),
+            Ui.Title("模型与默认任务策略", 16),
             Ui.Pair(model, effort),
-            customModelBox,
             Ui.Pair(permission, mode),
             taskButtons);
         tasks.Spacing = 14;
 
         var workspaceActions = Ui.Inline(
-            Ui.Button("使用上方指定路径", () => Run(async () => {
+            Ui.Button("使用指定路径", () => Run(async () => {
                 if (string.IsNullOrWhiteSpace(customWorkspaceBox.Text)) throw new InvalidOperationException("请输入服务器工作区路径。");
                 await work.ConfigureAsync(work.Settings with { Workspace = customWorkspaceBox.Text.Trim() });
             }), true),
             Ui.Action("浏览服务器目录…", Symbol.Folder, () => Run(ChooseWorkspaceAsync)));
         var project = Ui.Stack(
-            Ui.Title("当前服务器工作区（支持自由指定）", 16),
-            Ui.Caption("可直接输入任意服务器工作区目录路径，或点击浏览文件夹；聊天与文件面板共享同一个项目目录。"),
+            Ui.Title("当前服务器工作区", 16),
             customWorkspaceBox,
             workspaceActions);
         project.Spacing = 12;
 
         var appearance = Ui.Stack(
-            Ui.Title("界面外观与消息展示（自动记忆）", 16),
-            Ui.Caption("支持「原版（全部内容）」、「步骤摘要（展示思考过程）」与「结论优先」三种模式，切换后立即生效并持久保存。"),
+            Ui.Title("界面外观与输出展示方式", 16),
             Ui.Pair(theme, presentation),
             Ui.Action("打开技能与扩展（Skills / 斜杠指令）", Symbol.Setting, () => shell.Navigate("skills")));
         appearance.Spacing = 12;
@@ -680,8 +718,7 @@ internal sealed class MainWindow : Window {
             Ui.Action("网络设置 · DoH", Symbol.World, () => Run(NetworkSettingsAsync)),
             Ui.Action("切换服务器或连接密钥", Symbol.Switch, () => { work.Disconnect(); Render(); }));
         var account = Ui.Stack(
-            Ui.Title("连接、网络与真实模型额度", 16),
-            Ui.Caption("查看 Gemini / Claude / GPT 模型的 5 小时与每周剩余额度百分比及重置时间，或优化 DNS / DoH 网络链路。"),
+            Ui.Title("连接、网络与账号额度", 16),
             accountActions);
         account.Spacing = 12;
 
@@ -690,69 +727,14 @@ internal sealed class MainWindow : Window {
             Ui.Pair(Ui.Card(project), Ui.Card(appearance)),
             Ui.Card(account));
         panel.Spacing = 16;
-        panel.MaxWidth = 840;
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
-        panel.Margin = new Thickness(0, 4, 0, 16);
-        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-    }
-
-    private async Task TaskOptionsAsync() {
-        var current = work.Settings;
-        var models = new ComboBox { Header = "从列表选择模型", ItemsSource = work.Families, DisplayMemberPath = "Name", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-        var customModel = new TextBox {
-            Header = "或自由指定模型 ID（留空则使用上方列表模型）",
-            PlaceholderText = "如 gemini-2.5-pro / claude-sonnet-4-5…",
-            Text = work.Families.Any(f => f.Id == current.Model) ? "" : current.Model,
-            CornerRadius = new CornerRadius(8)
-        };
-        var thoughts = new ComboBox { Header = "思考强度", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-        var customEffort = new TextBox {
-            Header = "或自由指定思考强度（可选，如 low / medium / high / xhigh）",
-            PlaceholderText = "留空则使用上方所选思考强度",
-            CornerRadius = new CornerRadius(8)
-        };
-        var policy = new ComboBox { Header = "审批策略", ItemsSource = new[] { new Choice("review", "Restriction · 逐项审批"), new Choice("turbo", "Turbo · 自动执行") }, HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-        var execution = new ComboBox { Header = "执行方式", ItemsSource = new[] { new Choice("plan", "先做计划"), new Choice("accept-edits", "直接实施") }, HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) };
-        var outputMode = new ComboBox {
-            Header = "输出展示方式",
-            ItemsSource = new[] {
-                new Choice("原版", "原版 · 展示全部内容"),
-                new Choice("步骤摘要", "步骤摘要 · 展示思考过程"),
-                new Choice("结论优先", "结论优先 · 优先展示结论")
-            },
+        panel.Margin = new Thickness(0, 4, 12, 16);
+        return new ScrollViewer {
+            Content = panel,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            CornerRadius = new CornerRadius(8)
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
-        void UpdateEfforts() {
-            if (models.SelectedItem is not ModelFamily family) return;
-            thoughts.ItemsSource = family.Efforts.Select(e => new Choice(e, FileRules.EffortLabel(e))).ToArray();
-            thoughts.SelectedItem = thoughts.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.Effort) ?? thoughts.Items.Cast<Choice>().FirstOrDefault(e => e.Id == family.DefaultEffort);
-        }
-        models.SelectionChanged += (_, _) => {
-            customModel.Text = "";
-            UpdateEfforts();
-        };
-        models.SelectedItem = work.Families.FirstOrDefault(f => f.Id == current.Model) ?? work.Families.FirstOrDefault();
-        UpdateEfforts();
-        policy.SelectedItem = policy.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.ApprovalMode);
-        execution.SelectedItem = execution.Items.Cast<Choice>().FirstOrDefault(e => e.Id == current.Mode);
-        outputMode.SelectedItem = outputMode.Items.Cast<Choice>().FirstOrDefault(e => e.Id == work.Presentation) ?? outputMode.Items.Cast<Choice>().First();
-        var dialogBody = Ui.Stack(models, customModel, thoughts, customEffort, policy, execution, outputMode);
-        dialogBody.MinWidth = 380;
-        if (await DialogAsync("模型、任务策略与展示方式（自动记忆）", new ScrollViewer { Content = dialogBody, MaxHeight = 520 }, "保存并记住") != ContentDialogResult.Primary) return;
-        if (outputMode.SelectedItem is Choice pres) {
-            work.SetPresentation(pres.Id);
-            signature = "";
-        }
-        var chosenModel = !string.IsNullOrWhiteSpace(customModel.Text)
-            ? customModel.Text.Trim()
-            : (models.SelectedItem as ModelFamily)?.Id ?? current.Model;
-        var chosenEffort = !string.IsNullOrWhiteSpace(customEffort.Text)
-            ? customEffort.Text.Trim()
-            : (thoughts.SelectedItem as Choice)?.Id ?? current.Effort;
-        if (policy.SelectedItem is Choice p && execution.SelectedItem is Choice m)
-            await work.ConfigureAsync(new(chosenModel, chosenEffort, p.Id, m.Id, current.Workspace));
-        Render();
     }
 
     private void Efforts(string preferred) {
@@ -768,15 +750,12 @@ internal sealed class MainWindow : Window {
     private async void AutoSaveSettings() {
         if (rendering || !work.Connected || work.Pending is not null) return;
         try {
-            var chosenModel = !string.IsNullOrWhiteSpace(customModelBox.Text)
-                ? customModelBox.Text.Trim()
-                : (model.SelectedItem as ModelFamily)?.Id;
-            if (string.IsNullOrWhiteSpace(chosenModel) || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
+            if (model.SelectedItem is not ModelFamily fam || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
                 return;
             var workspacePath = !string.IsNullOrWhiteSpace(customWorkspaceBox.Text)
                 ? customWorkspaceBox.Text.Trim()
                 : work.Settings.Workspace;
-            var candidate = new TaskSettings(chosenModel, e.Id, p.Id, m.Id, workspacePath);
+            var candidate = new TaskSettings(fam.Id, e.Id, p.Id, m.Id, workspacePath);
             if (candidate == work.Settings) return;
             await work.ConfigureAsync(candidate);
             Render();
@@ -786,15 +765,12 @@ internal sealed class MainWindow : Window {
     }
 
     private async Task SaveSettingsAsync() {
-        var chosenModel = !string.IsNullOrWhiteSpace(customModelBox.Text)
-            ? customModelBox.Text.Trim()
-            : (model.SelectedItem as ModelFamily)?.Id;
-        if (string.IsNullOrWhiteSpace(chosenModel) || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
-            throw new InvalidOperationException("请选择或输入有效的模型、强度和策略。");
+        if (model.SelectedItem is not ModelFamily fam || effort.SelectedItem is not Choice e || permission.SelectedItem is not Choice p || mode.SelectedItem is not Choice m)
+            throw new InvalidOperationException("请选择有效的模型、思考强度和策略。");
         var workspacePath = !string.IsNullOrWhiteSpace(customWorkspaceBox.Text)
             ? customWorkspaceBox.Text.Trim()
             : work.Settings.Workspace;
-        await work.ConfigureAsync(new(chosenModel, e.Id, p.Id, m.Id, workspacePath));
+        await work.ConfigureAsync(new(fam.Id, e.Id, p.Id, m.Id, workspacePath));
     }
 
     private void ShowPage(string page) {
@@ -852,6 +828,9 @@ internal sealed class MainWindow : Window {
         notice.IsOpen = true;
     }
 
+    private string CurrentNoticeKey() =>
+        (work.Selected?.Id ?? "none") + ":" + (work.Selected?.Revision ?? 0) + ":" + (work.Selected?.Error ?? work.Notice ?? "");
+
     private void UpdateSendState() {
         var hasInput = !string.IsNullOrWhiteSpace(composer.Text) || work.Draft.References.Length > 0;
         var isRunning = work.Selected?.Running == true;
@@ -864,8 +843,7 @@ internal sealed class MainWindow : Window {
             steerBtn.IsEnabled = canAct && (hasInput || work.Queue.Count > 0);
             stop.Visibility = Visibility.Visible;
             stop.IsEnabled = !busy;
-            composer.PlaceholderText = "任务运行中：输入后续指令可点「对话排队」自动接续，或点「立即引导」直接转向…";
-            composerHint.Text = "任务运行中：Ctrl + Enter 加入对话排队   ·   Ctrl + Shift + Enter 立即引导   ·   无需先手动点停止";
+            composer.PlaceholderText = "任务运行中，可输入后续排队或立即引导指令…";
         } else {
             send.Visibility = Visibility.Visible;
             send.IsEnabled = canAct && (hasInput || work.Queue.Count > 0);
@@ -873,8 +851,7 @@ internal sealed class MainWindow : Window {
             queueBtn.IsEnabled = canAct && hasInput;
             steerBtn.Visibility = Visibility.Collapsed;
             stop.Visibility = Visibility.Collapsed;
-            composer.PlaceholderText = "描述任务，点「@ 引用」关联路径，或点「/ 技能与指令」触发工作流…";
-            composerHint.Text = "Ctrl + Enter 发送   ·   Enter 换行   ·   运行中支持「对话排队」与「立即引导」";
+            composer.PlaceholderText = "输入消息，或点「@ 引用」与「/ 技能与指令」…";
         }
     }
 
@@ -915,7 +892,7 @@ internal sealed class MainWindow : Window {
         var topRow = new Grid { ColumnSpacing = 8 };
         topRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         topRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var queueHeader = Ui.Caption($"排队中的对话 · {work.Queue.Count} 条（当前任务完成后将按顺序自动发送）");
+        var queueHeader = Ui.Caption($"排队中的对话 · {work.Queue.Count} 条");
         queueHeader.FontWeight = new() { Weight = 600 };
         topRow.Children.Add(queueHeader);
         if (work.Selected?.Running != true && work.Pending is null) {
@@ -966,10 +943,26 @@ internal sealed class MainWindow : Window {
             shell.View.Visibility = work.Connected ? Visibility.Visible : Visibility.Collapsed;
             progress.IsActive = busy || loadingSession;
             connection.Text = uiCheck && work.Connected ? "离线预览 · 示例数据" : (busy || loadingSession) ? "正在处理…" : work.ConnectionLabel;
-            if (!notice.IsOpen && !string.IsNullOrWhiteSpace(work.Selected?.Error ?? work.Notice)) {
-                notice.Title = "服务器状态";
-                notice.Message = work.Selected?.Error ?? work.Notice;
-                notice.Severity = InfoBarSeverity.Warning;
+
+            var rawError = work.Selected?.Error ?? work.Notice;
+            var noticeKey = CurrentNoticeKey();
+            if (!notice.IsOpen && noticeKey != dismissedNoticeKey && !string.IsNullOrWhiteSpace(rawError)) {
+                if (rawError.Contains("The stream was interrupted", StringComparison.OrdinalIgnoreCase)) {
+                    notice.Title = "上一轮流式传输曾中断";
+                    notice.Message = "该对话上一轮生成时流式传输被中断。你可直接输入新消息，或点右侧按钮让 AGY 继续完成任务。";
+                    notice.Severity = InfoBarSeverity.Informational;
+                    notice.ActionButton = Ui.Button("继续完成任务", () => Run(async () => {
+                        dismissedNoticeKey = CurrentNoticeKey();
+                        notice.IsOpen = false;
+                        work.UpdateDraft("请继续完成刚才中断的任务。");
+                        await work.SendAsync();
+                    }), true);
+                } else {
+                    notice.Title = "服务器状态";
+                    notice.Message = rawError;
+                    notice.Severity = InfoBarSeverity.Warning;
+                    notice.ActionButton = null;
+                }
                 notice.IsOpen = true;
             }
             heading.Text = work.Selected?.DisplayName ?? "新对话";
@@ -978,14 +971,9 @@ internal sealed class MainWindow : Window {
 
             var matchedFamily = work.Families.FirstOrDefault(f => f.Id == work.Settings.Model);
             var familyName = matchedFamily?.Name ?? (string.IsNullOrWhiteSpace(work.Settings.Model) ? "选择模型" : work.Settings.Model);
-            quickModelLabel.Text = familyName + " · " + FileRules.EffortLabel(work.Settings.Effort) + " ⌄";
-            ToolTipService.SetToolTip(quickModel, "更改模型（支持自由指定）、思考强度、审批策略和执行方式");
+            quickModelLabel.Text = familyName + " · " + FileRules.EffortLabel(work.Settings.Effort);
+            ToolTipService.SetToolTip(quickModel, "切换模型与思考强度");
             quickModel.IsEnabled = !busy && work.Pending is null;
-
-            headerPresentationLabel.Text = "展示：" + FileRules.PresentationLabel(work.Presentation) + " ⌄";
-            composerPresentationLabel.Text = FileRules.PresentationLabel(work.Presentation) + " ⌄";
-
-            taskSummary.Text = (work.Settings.ApprovalMode == "turbo" ? "Turbo 自动执行" : "Restriction 逐项审批") + " · " + (work.Settings.Mode == "plan" ? "先做计划" : "直接实施");
             composer.IsReadOnly = busy || work.Pending is not null;
 
             if (!ReferenceEquals(catalog, work.Families)) {
@@ -994,13 +982,12 @@ internal sealed class MainWindow : Window {
                 effortFamily = "";
             }
             model.SelectedItem = matchedFamily ?? work.Families.FirstOrDefault();
-            customModelBox.Text = matchedFamily is null ? work.Settings.Model : "";
             customWorkspaceBox.Text = work.Settings.Workspace;
             Efforts(work.Settings.Effort);
             permission.SelectedItem = permission.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Settings.ApprovalMode);
             mode.SelectedItem = mode.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Settings.Mode);
             save.IsEnabled = !busy && work.Pending is null;
-            model.IsEnabled = effort.IsEnabled = permission.IsEnabled = mode.IsEnabled = customModelBox.IsEnabled = customWorkspaceBox.IsEnabled = save.IsEnabled;
+            model.IsEnabled = effort.IsEnabled = permission.IsEnabled = mode.IsEnabled = customWorkspaceBox.IsEnabled = save.IsEnabled;
             theme.SelectedItem = theme.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Theme);
             presentation.SelectedItem = presentation.Items.Cast<Choice>().FirstOrDefault(x => x.Id == work.Presentation);
             ApplyTheme();
@@ -1097,12 +1084,12 @@ internal sealed class MainWindow : Window {
     private async Task NetworkSettingsAsync() {
         var current = work.Network;
         var proxyBox = new TextBox {
-            Header = "HTTP 代理策略（留空自动跟随系统代理如 FlClash，填 direct 强制直连，或指定 http://127.0.0.1:7890）",
+            Header = "HTTP 代理策略（留空自动跟随系统代理，填 direct 强制直连，或指定代理地址）",
             PlaceholderText = "留空自动跟随系统代理 / direct / http://127.0.0.1:7890",
             Text = current.ProxyUrl ?? "",
             CornerRadius = new CornerRadius(8)
         };
-        var enable = new ToggleSwitch { Header = "加密 DNS（DoH，支持标准 RFC 8484 Wireformat 与 JSON）", IsOn = current.UseDoh, OnContent = "优先使用 DoH 解析（支持优选 IP）", OffContent = "仅使用系统 DNS" };
+        var enable = new ToggleSwitch { Header = "加密 DNS（DoH，支持 RFC 8484 Wireformat 与 JSON）", IsOn = current.UseDoh, OnContent = "优先使用 DoH 解析", OffContent = "仅使用系统 DNS" };
         var provider = new ComboBox {
             Header = "DoH 服务商",
             ItemsSource = new[] { "AliDNS", "DNSPod", "Cloudflare", "Google", "Custom" },
@@ -1111,12 +1098,12 @@ internal sealed class MainWindow : Window {
             CornerRadius = new CornerRadius(8)
         };
         var customUrl = new TextBox {
-            Header = "自定义 DoH 地址（可选，如浏览器同款 DoH / Cloudflare 优选 DoH）",
+            Header = "自定义 DoH 地址（可选）",
             PlaceholderText = "如 https://edge.1molchuan.top/linuxdo 或 https://dns.alidns.com/dns-query",
             Text = current.CustomUrl ?? "",
             CornerRadius = new CornerRadius(8)
         };
-        var fallback = new CheckBox { Content = "当 DoH 服务器不可达时自动回退至系统 DNS（正常情况下始终优先采用 DoH 解析结果）", IsChecked = current.SystemFallback };
+        var fallback = new CheckBox { Content = "DoH 不可达时自动回退至系统 DNS", IsChecked = current.SystemFallback };
         void SyncNetControls() {
             provider.IsEnabled = customUrl.IsEnabled = fallback.IsEnabled = enable.IsOn;
         }
@@ -1124,7 +1111,7 @@ internal sealed class MainWindow : Window {
         enable.Toggled += (_, _) => SyncNetControls();
         var dialog = new ContentDialog {
             XamlRoot = root.XamlRoot,
-            Title = "网络链路、FlClash 代理与 DNS 设置",
+            Title = "网络链路与 DNS 设置",
             PrimaryButtonText = work.Connected ? "保存并重新连接" : "保存",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
@@ -1133,8 +1120,7 @@ internal sealed class MainWindow : Window {
                 enable,
                 provider,
                 customUrl,
-                fallback,
-                Ui.Caption("提示：若使用 FlClash 系统代理模式，保持上方代理框留空即可自动走系统代理，或直接填入 FlClash 端口（如 http://127.0.0.1:7890）；若服务器支持直连且不想经过代理，可填入 direct。"))
+                fallback)
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         var selectedProvider = provider.SelectedItem as string ?? "Cloudflare";
@@ -1279,7 +1265,7 @@ internal sealed class MainWindow : Window {
                     if (cleanThinking.Length > 0) {
                         var summary = SummarizeLine(cleanThinking, "思考分析");
                         var capturedThinking = cleanThinking;
-                        processItems.Add((step.Index * 2, "thinking", "思考过程 · " + summary, capturedThinking, () => MessageText(capturedThinking)));
+                        processItems.Add((step.Index * 2, "thinking", "思考摘要 · " + summary, capturedThinking, () => MessageText(capturedThinking)));
                     }
                     var cleanStepText = FileRules.CleanText(step.Text);
                     if (cleanStepText.Length > 0 && cleanStepText != cleanMessageText) {
@@ -1318,7 +1304,7 @@ internal sealed class MainWindow : Window {
                 roleHeader = Ui.SectionLabel("你");
             } else {
                 var modeTag = Ui.Surface(
-                    Ui.Caption(work.Presentation),
+                    Ui.Caption(FileRules.PresentationLabel(work.Presentation)),
                     "LayerFillColorAltBrush",
                     new Thickness(7, 2, 7, 2),
                     6);
@@ -1343,7 +1329,7 @@ internal sealed class MainWindow : Window {
             if (message.Role == "user") {
                 if (cleanMessageText.Length > 0) panel.Children.Add(MessageText(cleanMessageText));
             } else if (work.Presentation == "原版") {
-                // 原版：完整按时间顺序展示所有思考过程、中间步骤、工具调用与最终回答（对超长多步对话自动折叠早期步骤以防 UI 卡顿）
+                // 原版：完整按时间顺序展示所有思考过程、中间步骤、工具调用与最终回答
                 if (processItems.Count > 0) {
                     var fullProcess = Ui.Stack();
                     fullProcess.Spacing = 8;
@@ -1351,7 +1337,7 @@ internal sealed class MainWindow : Window {
                     if (inlineStart > 0) {
                         var earlyItems = processItems.Take(inlineStart).ToArray();
                         fullProcess.Children.Add(LazyExpander(
-                            $"展开早期 {earlyItems.Length} 个思考与工具步骤（共 {processItems.Count} 步）",
+                            $"展开早期 {earlyItems.Length} 个步骤（共 {processItems.Count} 步）",
                             () => {
                                 var earlyStack = Ui.Stack();
                                 earlyStack.Spacing = 8;
@@ -1369,31 +1355,58 @@ internal sealed class MainWindow : Window {
                     panel.Children.Add(MessageText(cleanMessageText));
                 }
                 if (isRunningHere) {
-                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在思考与输出全部内容…")));
+                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在输出…")));
                 }
             } else if (work.Presentation == "步骤摘要") {
-                // 步骤摘要（展示思考过程）：分步编号展示思考与工具摘要，可逐项展开，下方呈现最终结论
-                if (processItems.Count > 0) {
-                    var stepTimeline = Ui.Stack();
-                    stepTimeline.Spacing = 6;
-                    stepTimeline.Children.Add(Ui.Caption($"思考过程与执行步骤 · 共 {processItems.Count} 步（点击展开详情）"));
-                    for (var sIdx = 0; sIdx < processItems.Count; sIdx++) {
-                        var item = processItems[sIdx];
-                        stepTimeline.Children.Add(LazyExpander($"步骤 {sIdx + 1}  ·  {item.Title}", item.ContentFactory, 8));
+                // 思考摘要 · 自动折叠工具：直接展示思考过程与阶段进展，方便实时观察是否跑偏并随时「立即引导」；所有工具调用与执行记录自动折叠
+                var thoughtItems = processItems.Where(p => p.Kind is "thinking" or "step").ToArray();
+                var toolItems = processItems.Where(p => p.Kind == "tool").ToArray();
+
+                if (thoughtItems.Length > 0) {
+                    var thoughtStack = Ui.Stack();
+                    thoughtStack.Spacing = 8;
+                    var inlineStart = thoughtItems.Length > 6 ? thoughtItems.Length - 4 : 0;
+                    if (inlineStart > 0) {
+                        var earlyThoughts = thoughtItems.Take(inlineStart).ToArray();
+                        thoughtStack.Children.Add(LazyExpander(
+                            $"展开早期 {earlyThoughts.Length} 段思考记录",
+                            () => {
+                                var earlyStack = Ui.Stack();
+                                earlyStack.Spacing = 8;
+                                foreach (var early in earlyThoughts) earlyStack.Children.Add(RenderProcessItem(early));
+                                return earlyStack;
+                            },
+                            8));
                     }
-                    panel.Children.Add(stepTimeline);
+                    for (var tIdx = inlineStart; tIdx < thoughtItems.Length; tIdx++) {
+                        thoughtStack.Children.Add(RenderProcessItem(thoughtItems[tIdx]));
+                    }
+                    panel.Children.Add(thoughtStack);
                 }
+
+                if (toolItems.Length > 0) {
+                    panel.Children.Add(LazyExpander(
+                        $"已自动折叠 {toolItems.Length} 次工具调用与执行记录",
+                        () => {
+                            var toolStack = Ui.Stack();
+                            toolStack.Spacing = 6;
+                            for (var k = 0; k < toolItems.Length; k++) {
+                                var toolItem = toolItems[k];
+                                toolStack.Children.Add(LazyExpander($"{k + 1}. {toolItem.Title}", toolItem.ContentFactory, 8));
+                            }
+                            return toolStack;
+                        },
+                        8));
+                }
+
                 if (isRunningHere) {
-                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("正在推进下一步思考与工具调用…")));
+                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在思考与执行…")));
                 }
                 if (cleanMessageText.Length > 0) {
-                    if (processItems.Count > 0) {
+                    if (thoughtItems.Length > 0 || toolItems.Length > 0) {
                         panel.Children.Add(Ui.Divider());
-                        panel.Children.Add(Ui.SectionLabel("最终结论"));
                     }
                     panel.Children.Add(MessageText(cleanMessageText));
-                } else if (!isRunningHere && processItems.Count > 0) {
-                    panel.Children.Add(Ui.Caption("本轮仅执行了上述步骤，未生成独立结论段落。"));
                 }
             } else {
                 // 结论优先：顶部直接展示最终结论，中间思考过程与工具调用统一收入底部折叠面板
@@ -1401,11 +1414,9 @@ internal sealed class MainWindow : Window {
                     panel.Children.Add(MessageText(cleanMessageText));
                 } else if (isRunningHere) {
                     var statusText = processItems.Count > 0
-                        ? $"AGY 正在思考与执行（已完成 {processItems.Count} 个中间步骤），结论完成后将在此优先展示…"
+                        ? $"AGY 正在执行（已完成 {processItems.Count} 步）…"
                         : "AGY 正在思考…";
                     panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption(statusText)));
-                } else if (processItems.Count > 0) {
-                    panel.Children.Add(Ui.Caption("本轮未产生独立文字结论，可展开下方过程查看执行结果。"));
                 }
 
                 if (processItems.Count > 0) {

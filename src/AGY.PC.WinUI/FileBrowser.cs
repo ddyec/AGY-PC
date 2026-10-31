@@ -8,7 +8,7 @@ internal sealed class FileBrowser {
     private readonly MainWindow window;
     private readonly Workspace work;
     private readonly bool picking, chooseWorkspace;
-    internal Grid View { get; } = new() { RowSpacing = 12, MaxWidth = 960, HorizontalAlignment = HorizontalAlignment.Stretch };
+    internal Grid View { get; } = new() { RowSpacing = 12, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox scope = new() { ItemsSource = new[] { "工作区", "已上传", "AGY 产物" }, SelectedIndex = 0, MinWidth = 136, CornerRadius = new CornerRadius(8) };
     private readonly TextBox search = new() { PlaceholderText = "搜索当前目录中的文件或文件夹…" };
     private readonly TextBox customPathBox = new() { PlaceholderText = "自由输入或粘贴服务器路径（支持绝对路径或相对工作区路径）…" };

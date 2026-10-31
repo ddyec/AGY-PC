@@ -65,7 +65,6 @@ internal sealed class BuildPane {
 
         var projectSection = Ui.Stack(
             Ui.Title("1 · 选择执行位置与项目目录", 16),
-            Ui.Caption("Windows 原生应用在本机构建，x64 Linux 任务通过 WSL 执行，服务端与前端任务交由当前 AGY 会话执行。"),
             target,
             distribution,
             folder,
@@ -81,7 +80,6 @@ internal sealed class BuildPane {
 
         var commandSection = Ui.Stack(
             Ui.Title("2 · 构建命令与产物回传", 16),
-            Ui.Caption("每次执行前均会展示目标环境、目录与完整命令供你确认；日志与产物可按需回传至当前会话。"),
             command,
             primaryActions);
         commandSection.Spacing = 14;
@@ -95,23 +93,19 @@ internal sealed class BuildPane {
         };
         log.TextChanged += (_, _) => { if (!string.IsNullOrEmpty(log.Text)) output.IsExpanded = true; };
 
-        var help = new Expander {
-            Header = "混合工作流安全边界说明",
-            Content = Ui.Caption("同步操作每次创建独立的本机目录副本，不会覆盖已有本地修改。WSL 模式会验证架构为 x86_64；单次产物回传上限 25 MiB。"),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            CornerRadius = new CornerRadius(12)
-        };
-
         var panel = Ui.Stack(
             Ui.Card(projectSection),
             Ui.Card(commandSection),
-            output,
-            help);
+            output);
         panel.Spacing = 16;
-        panel.MaxWidth = 840;
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
-        panel.Margin = new Thickness(0, 4, 0, 16);
-        View = new() { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        panel.Margin = new Thickness(0, 4, 12, 16);
+        View = new() {
+            Content = panel,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
 
         void TargetChanged() {
             distribution.Visibility = Target == BuildTarget.WslLinuxX64 ? Visibility.Visible : Visibility.Collapsed;
