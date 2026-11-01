@@ -1002,10 +1002,11 @@ internal sealed class MainWindow : Window {
 
             pending.Children.Clear();
             if (work.Pending is { } waiting) {
-                var pendingActions = Ui.Inline(
+                var pendingActions = Ui.Wrap(8, 6,
                     Ui.Caption("发送结果待确认，不会自动重发。"),
                     Ui.ToolbarButton("核对会话", null, "切换到该会话检查状态", () => SelectSessionAsync(waiting.SessionID, forceRefresh: true)),
-                    Ui.ToolbarButton("按原编号重试", null, "使用原请求编号安全重发", () => Run(work.SubmitPendingAsync)));
+                    Ui.ToolbarButton("按原编号重试", null, "使用原请求编号安全重发", () => Run(work.SubmitPendingAsync)),
+                    Ui.ToolbarButton("取消并解锁输入", Symbol.Cancel, "清除待确认状态并解锁输入框", () => { work.ClearPending(); Render(); }));
                 pending.Children.Add(pendingActions);
             }
 
@@ -1325,9 +1326,10 @@ internal sealed class MainWindow : Window {
 
             var panel = Ui.Stack(headerGrid);
             panel.Spacing = 10;
+            var messageLinks = new List<(string Label, string Link)>();
 
             if (message.Role == "user") {
-                if (cleanMessageText.Length > 0) panel.Children.Add(MessageText(cleanMessageText));
+                if (cleanMessageText.Length > 0) panel.Children.Add(MessageText(cleanMessageText, messageLinks));
             } else if (work.Presentation == "原版") {
                 // 原版：完整按时间顺序展示所有思考过程、中间步骤、工具调用与最终回答
                 if (processItems.Count > 0) {
@@ -1352,7 +1354,7 @@ internal sealed class MainWindow : Window {
                     panel.Children.Add(fullProcess);
                 }
                 if (cleanMessageText.Length > 0) {
-                    panel.Children.Add(MessageText(cleanMessageText));
+                    panel.Children.Add(MessageText(cleanMessageText, messageLinks));
                 }
                 if (isRunningHere) {
                     panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在输出…")));
@@ -1406,12 +1408,12 @@ internal sealed class MainWindow : Window {
                     if (thoughtItems.Length > 0 || toolItems.Length > 0) {
                         panel.Children.Add(Ui.Divider());
                     }
-                    panel.Children.Add(MessageText(cleanMessageText));
+                    panel.Children.Add(MessageText(cleanMessageText, messageLinks));
                 }
             } else {
                 // 结论优先：顶部直接展示最终结论，中间思考过程与工具调用统一收入底部折叠面板
                 if (cleanMessageText.Length > 0) {
-                    panel.Children.Add(MessageText(cleanMessageText));
+                    panel.Children.Add(MessageText(cleanMessageText, messageLinks));
                 } else if (isRunningHere) {
                     var statusText = processItems.Count > 0
                         ? $"AGY 正在执行（已完成 {processItems.Count} 步）…"
@@ -1436,25 +1438,8 @@ internal sealed class MainWindow : Window {
                 }
             }
 
-            if (hasAttachments) {
-                var attachRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                foreach (var a in message.Attachments ?? []) {
-                    if (a.Path is { } path) {
-                        attachRow.Children.Add(Ui.ToolbarButton(
-                            (a.Mime == "inode/directory" ? "@ " : "下载 ") + a.Name,
-                            a.Mime == "inode/directory" ? Symbol.Folder : Symbol.Download,
-                            a.Name,
-                            () => Run(async () => {
-                                if (a.Mime == "inode/directory") {
-                                    shell.Navigate("files");
-                                    await files.ShowFolderAsync(path);
-                                } else {
-                                    await SaveRemoteAsync(path, a.Name);
-                                }
-                            })));
-                    }
-                }
-                if (attachRow.Children.Count > 0) panel.Children.Add(attachRow);
+            if (BuildGroupedArtifacts(messageLinks, message.Attachments ?? []) is { } groupedArtifacts) {
+                panel.Children.Add(groupedArtifacts);
             }
 
             if (message.Role == "user") {
@@ -1492,29 +1477,225 @@ internal sealed class MainWindow : Window {
         });
     }
 
-    private UIElement MessageText(string value) {
+    internal static bool IsImageFile(string? nameOrPath, string? mime = null) {
+        if (mime?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true) return true;
+        if (string.IsNullOrWhiteSpace(nameOrPath)) return false;
+        var clean = nameOrPath.Split('#', '?')[0];
+        var ext = Path.GetExtension(clean).ToLowerInvariant();
+        return ext is ".jpg" or ".jpeg" or ".png" or ".webp" or ".gif" or ".bmp";
+    }
+
+    private string? ResolveRemotePath(string link) {
+        if (string.IsNullOrWhiteSpace(link)) return null;
+        var cleanLink = link.Split('#')[0];
+        if (Uri.TryCreate(cleanLink, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https") return null;
+        if (cleanLink.StartsWith("file://", StringComparison.OrdinalIgnoreCase) && Uri.TryCreate(cleanLink, UriKind.Absolute, out var file) && string.IsNullOrEmpty(file.Host))
+            return Uri.UnescapeDataString(file.AbsolutePath);
+        if (cleanLink.StartsWith("sandbox:", StringComparison.OrdinalIgnoreCase))
+            return Uri.UnescapeDataString(cleanLink[8..]);
+        if (cleanLink.StartsWith('/'))
+            return Uri.UnescapeDataString(cleanLink);
+        if (!cleanLink.Contains(':'))
+            return work.Settings.Workspace.TrimEnd('/') + "/" + Uri.UnescapeDataString(cleanLink);
+        return null;
+    }
+
+    private UIElement? BuildGroupedArtifacts(List<(string Label, string Link)> links, Attachment[] attachments) {
+        var imageItems = new List<(string DisplayName, string RemotePath)>();
+        var seenImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fileButtons = new List<UIElement>();
+        var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var a in attachments) {
+            if (a.Path is not { Length: > 0 } path) continue;
+            if (IsImageFile(a.Name, a.Mime)) {
+                if (seenImages.Add(path)) imageItems.Add((a.Name, path));
+            } else {
+                if (!seenTargets.Add(path)) continue;
+                var capturedPath = path;
+                var capturedName = a.Name;
+                var isDir = a.Mime == "inode/directory";
+                fileButtons.Add(Ui.ToolbarButton(
+                    (isDir ? "@ " : "") + capturedName,
+                    isDir ? Symbol.Folder : Symbol.Download,
+                    capturedPath,
+                    () => Run(async () => {
+                        if (isDir) {
+                            shell.Navigate("files");
+                            await files.ShowFolderAsync(capturedPath);
+                        } else {
+                            await SaveRemoteAsync(capturedPath, capturedName);
+                        }
+                    })));
+            }
+        }
+
+        foreach (var (rawLabel, rawLink) in links) {
+            var remotePath = ResolveRemotePath(rawLink);
+            if (remotePath is not null && IsImageFile(remotePath, null)) {
+                if (seenImages.Add(remotePath)) {
+                    var imgName = string.IsNullOrWhiteSpace(rawLabel) ? Path.GetFileName(remotePath) : rawLabel.Trim('`', ' ');
+                    imageItems.Add((imgName, remotePath));
+                }
+                continue;
+            }
+            var dedupKey = remotePath ?? rawLink.Split('#')[0];
+            if (!seenTargets.Add(dedupKey)) continue;
+            var cleanLabel = rawLabel.Trim('`', ' ');
+            if (remotePath is not null && Path.GetFileName(remotePath) is { Length: > 0 } fileName && (cleanLabel.Contains("::") || cleanLabel.Length == 0 || !cleanLabel.Contains('.'))) {
+                cleanLabel = fileName;
+            }
+            if (string.IsNullOrWhiteSpace(cleanLabel)) cleanLabel = dedupKey;
+            var capturedLink = rawLink;
+            var capturedLabel = cleanLabel;
+            var isWeb = Uri.TryCreate(rawLink, UriKind.Absolute, out var webUri) && webUri.Scheme is "http" or "https";
+            fileButtons.Add(Ui.ToolbarButton(
+                capturedLabel,
+                isWeb ? Symbol.Globe : Symbol.OpenFile,
+                dedupKey,
+                () => Run(() => OpenLinkAsync(capturedLink, capturedLabel))));
+        }
+
+        if (imageItems.Count == 0 && fileButtons.Count == 0) return null;
+
+        var container = Ui.Stack();
+        container.Spacing = 10;
+
+        if (imageItems.Count > 0) {
+            var imageWrap = Ui.Wrap(10, 10);
+            foreach (var (displayName, remotePath) in imageItems) {
+                imageWrap.Children.Add(CreateImageThumbnailCard(remotePath, displayName));
+            }
+            container.Children.Add(imageWrap);
+        }
+
+        if (fileButtons.Count > 0) {
+            var groupStack = Ui.Stack(
+                Ui.SectionLabel($"相关文件与产物 · {fileButtons.Count}"),
+                Ui.Wrap(8, 8, fileButtons.ToArray()));
+            groupStack.Spacing = 8;
+            container.Children.Add(Ui.Surface(groupStack, "LayerFillColorAltBrush", new Thickness(12, 10, 12, 10), 10));
+        }
+
+        return container;
+    }
+
+    private UIElement CreateImageThumbnailCard(string remotePath, string displayName) {
+        var previewFrame = new Grid {
+            Width = 164,
+            Height = 110,
+            CornerRadius = new CornerRadius(8)
+        };
+        var placeholder = Ui.Stack(
+            Ui.Glyph(Symbol.Pictures, 22),
+            Ui.Caption("点击预览大图"));
+        placeholder.Spacing = 4;
+        placeholder.HorizontalAlignment = HorizontalAlignment.Center;
+        placeholder.VerticalAlignment = VerticalAlignment.Center;
+        placeholder.Opacity = 0.65;
+
+        var image = new Image {
+            Stretch = Stretch.UniformToFill,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        previewFrame.Children.Add(placeholder);
+        previewFrame.Children.Add(image);
+
+        var thumbBox = Ui.Surface(previewFrame, "LayerFillColorDefaultBrush", new Thickness(0), 8);
+
+        var titleText = Ui.Text(displayName, 12);
+        titleText.TextWrapping = TextWrapping.NoWrap;
+        titleText.TextTrimming = TextTrimming.CharacterEllipsis;
+        var bottomRow = new Grid { ColumnSpacing = 6, Width = 164 };
+        bottomRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        bottomRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        bottomRow.Children.Add(Ui.FluentGlyph("\uE8B9", 12));
+        Grid.SetColumn(titleText, 1);
+        bottomRow.Children.Add(titleText);
+
+        var cardBody = Ui.Stack(thumbBox, bottomRow);
+        cardBody.Spacing = 6;
+
+        var cardButton = Ui.Button(displayName, () => Run(() => PreviewImageAsync(remotePath, displayName)));
+        cardButton.Content = cardBody;
+        cardButton.Padding = new Thickness(7, 7, 7, 6);
+        cardButton.CornerRadius = new CornerRadius(10);
+        ToolTipService.SetToolTip(cardButton, $"点击放大预览：{displayName}");
+
+        if (!uiCheck) {
+            _ = LoadImageThumbnailAsync(remotePath, image, placeholder);
+        }
+
+        return cardButton;
+    }
+
+    private async Task LoadImageThumbnailAsync(string remotePath, Image targetImage, UIElement placeholder) {
+        var localFile = await work.GetCachedImageFileAsync(remotePath);
+        if (string.IsNullOrWhiteSpace(localFile) || !File.Exists(localFile)) return;
+        DispatcherQueue.TryEnqueue(() => {
+            try {
+                var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage { DecodePixelWidth = 360 };
+                bmp.UriSource = new Uri(localFile);
+                targetImage.Source = bmp;
+                placeholder.Visibility = Visibility.Collapsed;
+            } catch { }
+        });
+    }
+
+    internal async Task PreviewImageAsync(string remotePath, string displayName) {
+        var localFile = await work.GetCachedImageFileAsync(remotePath);
+        if (string.IsNullOrWhiteSpace(localFile) || !File.Exists(localFile)) {
+            await SaveRemoteAsync(remotePath, displayName);
+            return;
+        }
+        var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(localFile));
+        var img = new Image {
+            Source = bmp,
+            Stretch = Stretch.Uniform,
+            MaxHeight = 680,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var viewer = new ScrollViewer {
+            Content = img,
+            ZoomMode = ZoomMode.Enabled,
+            MinZoomFactor = 0.5f,
+            MaxZoomFactor = 4.0f,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 700,
+            MinWidth = 640
+        };
+        var result = await DialogAsync(displayName, viewer, "关闭", "另存为…");
+        if (result == ContentDialogResult.Secondary) {
+            await SaveRemoteAsync(remotePath, displayName);
+        }
+    }
+
+    private UIElement MessageText(string value, List<(string Label, string Link)>? collectedLinks = null) {
         var panel = Ui.Stack();
         panel.Spacing = 10;
         var clean = FileRules.CleanText(value);
         if (clean.Length == 0) return panel;
+        var localLinks = collectedLinks ?? [];
         var pieces = clean.Split("```");
         for (var i = 0; i < pieces.Length; i++) {
             var text = pieces[i];
             if (i % 2 == 0) {
-                var offset = 0;
-                foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text, @"\[([^\]\n]{1,1024})\]\(([^\)\n]{1,8192})\)", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1))) {
-                    if (match.Index > offset) {
-                        var before = text[offset..match.Index].Trim('\r', '\n');
-                        if (before.Length > 0) panel.Children.Add(Ui.Prose(before));
-                    }
-                    var label = match.Groups[1].Value;
-                    var link = match.Groups[2].Value;
-                    panel.Children.Add(Ui.ToolbarButton(label, Symbol.OpenFile, link, () => Run(() => OpenLinkAsync(link, label))));
-                    offset = match.Index + match.Length;
-                }
-                if (offset < text.Length) {
-                    var trimmed = text[offset..].Trim('\r', '\n');
-                    if (trimmed.Length > 0) panel.Children.Add(Ui.Prose(trimmed));
+                var inlined = System.Text.RegularExpressions.Regex.Replace(
+                    text,
+                    @"!?\[([^\]\n]{1,1024})\]\(([^\)\n]{1,8192})\)",
+                    match => {
+                        var label = match.Groups[1].Value;
+                        var link = match.Groups[2].Value;
+                        localLinks.Add((label, link));
+                        return label;
+                    },
+                    System.Text.RegularExpressions.RegexOptions.None,
+                    TimeSpan.FromSeconds(1)).Trim('\r', '\n');
+                if (inlined.Length > 0) {
+                    panel.Children.Add(Ui.Prose(inlined));
                 }
                 continue;
             }
@@ -1546,24 +1727,26 @@ internal sealed class MainWindow : Window {
             var codeCard = Ui.Surface(Ui.Stack(codeTop, box), "LayerFillColorDefaultBrush", new Thickness(12, 10, 12, 12), 10);
             panel.Children.Add(codeCard);
         }
+        if (collectedLinks is null && localLinks.Count > 0 && BuildGroupedArtifacts(localLinks, []) is { } standaloneArtifacts) {
+            panel.Children.Add(standaloneArtifacts);
+        }
         return panel;
     }
 
     private async Task OpenLinkAsync(string link, string label) {
-        if (Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme == "https" && string.IsNullOrEmpty(uri.UserInfo)) {
+        if (Uri.TryCreate(link, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" && string.IsNullOrEmpty(uri.UserInfo)) {
             await Launcher.LaunchUriAsync(uri);
             return;
         }
-        string? path = null;
-        if (link.StartsWith("file://") && Uri.TryCreate(link, UriKind.Absolute, out var file) && string.IsNullOrEmpty(file.Host))
-            path = Uri.UnescapeDataString(file.AbsolutePath);
-        else if (link.StartsWith("sandbox:"))
-            path = Uri.UnescapeDataString(link[8..]);
-        else if (link.StartsWith('/'))
-            path = Uri.UnescapeDataString(link);
-        else if (!link.Contains(':'))
-            path = work.Settings.Workspace.TrimEnd('/') + "/" + Uri.UnescapeDataString(link);
-        if (path is not null) await SaveRemoteAsync(path, label);
+        var path = ResolveRemotePath(link);
+        if (path is not null) {
+            if (IsImageFile(path, null)) {
+                await PreviewImageAsync(path, Path.GetFileName(path));
+            } else {
+                var saveName = Path.GetFileName(path) is { Length: > 0 } fName ? fName : label;
+                await SaveRemoteAsync(path, saveName);
+            }
+        }
     }
 
     internal void Copy(string text) {

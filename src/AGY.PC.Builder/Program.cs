@@ -24,7 +24,7 @@ internal static class Program {
 
             Directory.CreateDirectory(LogFolder);
             log = new StreamWriter(Path.Combine(LogFolder, "build.log"), false, Encoding.UTF8) { AutoFlush = true };
-            Say("AGY - PC · WinUI 3 本机构建 (v2.0.0-beta.9)");
+            Say("AGY - PC · WinUI 3 本机构建 (v2.0.0-beta.10)");
 
             StopRunningClient();
             CleanupLegacyBuilds();

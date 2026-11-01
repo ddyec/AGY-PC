@@ -9,6 +9,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     private string scope = "";
     private ProfileState profile = new();
     private readonly Dictionary<string, Session> sessionCache = [];
+    private readonly Dictionary<string, Task<string?>> imageDownloads = [];
     private DateTimeOffset lastProfileCheck;
     private readonly Func<Credentials,GatewayClient>? factory;
     public Workspace(IStateStore store, Func<Credentials,GatewayClient> factory) : this(store) { this.factory = factory; }
@@ -416,8 +417,15 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         if (factory is not null) await ReloadAsync();
         else _ = ReloadAsync();
     }
+    public void ClearPending() {
+        if (profile.Pending is null) return;
+        profile.Pending = null;
+        Save();
+        Publish();
+    }
     private void Reconcile(Session snapshot) {
-        if (Pending is not { } pending || pending.SessionID != snapshot.Id || snapshot.Messages?.Any(m => m.Id == pending.RequestID) != true) return;
+        if (Pending is not { } pending || pending.SessionID != snapshot.Id) return;
+        if (snapshot.Messages?.Any(m => m.Id == pending.RequestID) != true) return;
         var draft = profile.Drafts.GetValueOrDefault(snapshot.Id);
         if (draft is not null) profile.Drafts[snapshot.Id] = new(draft.Text == pending.Text ? "" : draft.Text,
             draft.References.Where(r => !pending.References.Any(sent => sent.Path == r.Path)).ToArray());
@@ -487,7 +495,38 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         return attachment;
     }
     public async Task DownloadAsync(string remote, string destination) {
-        await VerifyProfileAsync(); var sid = await EnsureSessionAsync(); await Api.DownloadAsync(sid,remote,destination);
+        await VerifyProfileAsync();
+        var sid = Selected?.Id ?? Sessions.FirstOrDefault()?.Id ?? await EnsureSessionAsync();
+        await Api.DownloadAsync(sid, remote, destination);
+    }
+    public Task<string?> GetCachedImageFileAsync(string remotePath) {
+        if (string.IsNullOrWhiteSpace(remotePath) || !Connected) return Task.FromResult<string?>(null);
+        var sid = Selected?.Id ?? Sessions.FirstOrDefault()?.Id;
+        if (string.IsNullOrWhiteSpace(sid)) return Task.FromResult<string?>(null);
+        var key = sid + "|" + remotePath;
+        lock (imageDownloads) {
+            if (imageDownloads.TryGetValue(key, out var existing) && (!existing.IsCompleted || (existing.IsCompletedSuccessfully && existing.Result is { } cached && File.Exists(cached)))) {
+                return existing;
+            }
+            var task = FetchCachedImageCoreAsync(sid, remotePath);
+            imageDownloads[key] = task;
+            return task;
+        }
+    }
+    private async Task<string?> FetchCachedImageCoreAsync(string sid, string remotePath) {
+        try {
+            var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AGY-PC", "ImageCache");
+            Directory.CreateDirectory(cacheDir);
+            var ext = Path.GetExtension(remotePath);
+            if (string.IsNullOrWhiteSpace(ext) || ext.Length > 8) ext = ".jpg";
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sid + "|" + remotePath)))[..24].ToLowerInvariant();
+            var localPath = Path.Combine(cacheDir, hash + ext);
+            if (File.Exists(localPath) && new FileInfo(localPath).Length > 0) return localPath;
+            await Api.DownloadAsync(sid, remotePath, localPath);
+            return File.Exists(localPath) && new FileInfo(localPath).Length > 0 ? localPath : null;
+        } catch {
+            return null;
+        }
     }
     public async Task SynchronizeProjectAsync(string destination) {
         if(Selected?.Running==true)throw new InvalidOperationException("请等待当前服务器任务结束后同步项目。");

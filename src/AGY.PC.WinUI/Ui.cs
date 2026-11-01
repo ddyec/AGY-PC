@@ -273,4 +273,51 @@ internal static class Ui {
     }
 
     public static string Tail(string path) => path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "工作区";
+
+    public static WrapPanel Wrap(double hSpacing = 8, double vSpacing = 8, params UIElement[] children) {
+        var panel = new WrapPanel { HorizontalSpacing = hSpacing, VerticalSpacing = vSpacing, HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var c in children) panel.Children.Add(c);
+        return panel;
+    }
+}
+
+internal sealed class WrapPanel : Panel {
+    public double HorizontalSpacing { get; set; } = 8;
+    public double VerticalSpacing { get; set; } = 8;
+
+    protected override Windows.Foundation.Size MeasureOverride(Windows.Foundation.Size availableSize) {
+        double maxWidth = double.IsInfinity(availableSize.Width) || availableSize.Width <= 0 ? 860 : availableSize.Width;
+        double x = 0, y = 0, rowH = 0, usedW = 0;
+        foreach (var child in Children) {
+            child.Measure(new Windows.Foundation.Size(maxWidth, double.PositiveInfinity));
+            var sz = child.DesiredSize;
+            if (x > 0 && x + sz.Width > maxWidth) {
+                usedW = Math.Max(usedW, x - HorizontalSpacing);
+                x = 0;
+                y += rowH + VerticalSpacing;
+                rowH = 0;
+            }
+            x += sz.Width + HorizontalSpacing;
+            rowH = Math.Max(rowH, sz.Height);
+        }
+        usedW = Math.Max(usedW, x > 0 ? x - HorizontalSpacing : 0);
+        return new Windows.Foundation.Size(usedW, y + rowH);
+    }
+
+    protected override Windows.Foundation.Size ArrangeOverride(Windows.Foundation.Size finalSize) {
+        double maxWidth = finalSize.Width > 0 ? finalSize.Width : 860;
+        double x = 0, y = 0, rowH = 0;
+        foreach (var child in Children) {
+            var sz = child.DesiredSize;
+            if (x > 0 && x + sz.Width > maxWidth) {
+                x = 0;
+                y += rowH + VerticalSpacing;
+                rowH = 0;
+            }
+            child.Arrange(new Windows.Foundation.Rect(x, y, Math.Min(sz.Width, maxWidth), sz.Height));
+            x += sz.Width + HorizontalSpacing;
+            rowH = Math.Max(rowH, sz.Height);
+        }
+        return new Windows.Foundation.Size(finalSize.Width, y + rowH);
+    }
 }

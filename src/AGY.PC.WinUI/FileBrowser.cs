@@ -16,7 +16,7 @@ internal sealed class FileBrowser {
     private readonly ListView entries = new() { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = false, MinHeight = 220 };
     private readonly CheckBox hidden = new() { Content = "显示隐藏项", FontSize = 12, MinWidth = 0 }, recent = new() { Content = "最近修改优先", FontSize = 12, MinWidth = 0 };
     private readonly TextBlock selection = Ui.Caption("选择文件或文件夹");
-    private Button reference = null!, download = null!, open = null!;
+    private Button reference = null!, download = null!, open = null!, preview = null!;
     private FileListing? listing;
     private string path = "";
     private int generation;
@@ -96,9 +96,11 @@ internal sealed class FileBrowser {
         var actionButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actionButtons.Children.Add(open);
         if (!chooseWorkspace) {
+            preview = Ui.Action("预览图片", Symbol.Pictures, () => Act(PreviewSelectedAsync));
             reference = Ui.Button("@ 选中项", () => Act(ReferenceAsync));
             download = Ui.Action("下载", Symbol.Download, () => Act(DownloadAsync));
             var upload = Ui.Action("上传文件", Symbol.Upload, () => Act(window.UploadAsync));
+            actionButtons.Children.Add(preview);
             actionButtons.Children.Add(reference);
             actionButtons.Children.Add(useCurrent);
             actionButtons.Children.Add(download);
@@ -135,11 +137,19 @@ internal sealed class FileBrowser {
         hidden.Unchecked += (_, _) => Filter();
         recent.Checked += (_, _) => Filter();
         recent.Unchecked += (_, _) => Filter();
-        entries.DoubleTapped += (_, _) => { if (Selected is { Directory: true }) Act(OpenAsync); };
+        entries.DoubleTapped += (_, _) => {
+            if (Selected is { Directory: true }) Act(OpenAsync);
+            else if (Selected is { Directory: false } f && MainWindow.IsImageFile(f.Name)) Act(PreviewSelectedAsync);
+        };
         entries.KeyDown += (_, e) => {
-            if (e.Key == Windows.System.VirtualKey.Enter && Selected is { Directory: true }) {
-                e.Handled = true;
-                Act(OpenAsync);
+            if (e.Key == Windows.System.VirtualKey.Enter) {
+                if (Selected is { Directory: true }) {
+                    e.Handled = true;
+                    Act(OpenAsync);
+                } else if (Selected is { Directory: false } f && MainWindow.IsImageFile(f.Name)) {
+                    e.Handled = true;
+                    Act(PreviewSelectedAsync);
+                }
             }
         };
     }
@@ -209,10 +219,17 @@ internal sealed class FileBrowser {
 
     private void Selection() {
         var item = Selected;
-        selection.Text = item is null ? "单击选择文件或文件夹；双击进入子目录。" : item.Name + (item.Directory ? " · 整个文件夹" : " · " + FormatSize(item.Size));
+        selection.Text = item is null ? "单击选择文件或文件夹；双击进入目录或预览图片。" : item.Name + (item.Directory ? " · 整个文件夹" : " · " + FormatSize(item.Size));
         open.IsEnabled = item?.Directory == true;
+        if (preview is not null) preview.IsEnabled = item is { Directory: false } f && MainWindow.IsImageFile(f.Name);
         if (reference is not null) reference.IsEnabled = item is not null;
         if (download is not null) download.IsEnabled = item is { Directory: false };
+    }
+
+    private async Task PreviewSelectedAsync() {
+        if (Selected is { Directory: false } e && MainWindow.IsImageFile(e.Name)) {
+            await window.PreviewImageAsync(e.Path, e.Name);
+        }
     }
 
     private async Task OpenAsync() {
