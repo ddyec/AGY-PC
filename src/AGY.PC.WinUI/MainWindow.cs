@@ -13,9 +13,9 @@ namespace AGY.PC.WinUI;
 
 internal sealed class MainWindow : Window {
     private readonly Workspace work;
-    private readonly Grid root = Ui.Root(), host = new();
+    private readonly Grid root = Ui.Root(), host = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly DesktopShell shell;
-    private readonly Grid conversationBody = new();
+    private readonly Grid conversationBody = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock quickModelLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center };
     private readonly ScrollViewer approvalScroll = new() { MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         referenceScroll = new() { MaxHeight = 96, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
@@ -34,12 +34,17 @@ internal sealed class MainWindow : Window {
         Padding = new Thickness(2, 2, 2, 8),
         PlaceholderText = "输入消息，或输入 @ 引用文件…"
     };
-    private readonly StackPanel messages = new() { Spacing = 18, MaxWidth = 880, HorizontalAlignment = HorizontalAlignment.Stretch },
+    private readonly StackPanel messages = new() { Spacing = 18, HorizontalAlignment = HorizontalAlignment.Stretch },
         references = new() { Orientation = Orientation.Horizontal, Spacing = 6 },
         approvals = new() { Spacing = 8 },
         pending = new() { Spacing = 8 },
         queuePanel = new() { Spacing = 6 };
-    private readonly ScrollViewer transcript = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly ScrollViewer transcript = new() {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        HorizontalAlignment = HorizontalAlignment.Stretch
+    };
     private readonly TextBlock heading = Ui.Title("新对话", 16), connection = Ui.Caption("尚未连接");
     private readonly ComboBox model = new() { Header = "模型", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
         effort = new() { Header = "思考强度", HorizontalAlignment = HorizontalAlignment.Stretch, CornerRadius = new CornerRadius(8) },
@@ -127,7 +132,7 @@ internal sealed class MainWindow : Window {
 
         stop = Ui.ToolbarButton("停止", Symbol.Stop, "停止当前生成", () => Run(work.StopAsync));
         save = Ui.Action("保存配置", Symbol.Accept, () => Run(SaveSettingsAsync), true);
-        latest = Ui.Button("↓ 回到最新消息", () => { following = true; transcript.ChangeView(null, transcript.ScrollableHeight, null); }, true);
+        latest = Ui.Button("↓ 回到最新消息", () => ScrollToBottom(false), true);
         latest.HorizontalAlignment = HorizontalAlignment.Center;
         latest.VerticalAlignment = VerticalAlignment.Bottom;
         latest.Margin = new Thickness(0, 0, 0, 14);
@@ -207,7 +212,7 @@ internal sealed class MainWindow : Window {
         });
 
         transcript.ViewChanged += (_, _) => {
-            if (rendering) return;
+            if (rendering || loadingSession) return;
             following = transcript.ScrollableHeight - transcript.VerticalOffset < 64;
             latest.Visibility = following ? Visibility.Collapsed : Visibility.Visible;
         };
@@ -396,7 +401,7 @@ internal sealed class MainWindow : Window {
     }
 
     private UIElement MakeChat() {
-        var page = new Grid { RowSpacing = 12, MaxWidth = 980, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var page = new Grid { RowSpacing = 12, HorizontalAlignment = HorizontalAlignment.Stretch };
         page.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         page.RowDefinitions.Add(new() { Height = GridLength.Auto });
 
@@ -463,11 +468,18 @@ internal sealed class MainWindow : Window {
         conversationBody.SizeChanged += (_, _) => {
             emptyFrame.MinHeight = Math.Max(280, conversationBody.ActualHeight - 16);
             LayoutSuggestions(conversationBody.ActualWidth);
+            if (conversationBody.ActualWidth > 32) {
+                var targetW = Math.Max(280, conversationBody.ActualWidth - 16);
+                messages.Width = targetW;
+                messages.MaxWidth = targetW;
+            }
         };
         welcome = new ScrollViewer {
             Content = emptyFrame,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch
         };
         conversationBody.Children.Add(welcome);
         Canvas.SetZIndex(latest, 10);
@@ -509,7 +521,6 @@ internal sealed class MainWindow : Window {
         input.Spacing = 6;
 
         var box = Ui.Surface(input, "CardBackgroundFillColorDefaultBrush", new Thickness(16, 12, 14, 10), 16);
-        box.MaxWidth = 880;
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         Grid.SetRow(box, 1);
         page.Children.Add(box);
@@ -788,10 +799,32 @@ internal sealed class MainWindow : Window {
 
     internal void ChatPage() { shell.Navigate("chat"); }
 
+    private void ScrollToBottom(bool disableAnimation = true) {
+        following = true;
+        latest.Visibility = Visibility.Collapsed;
+        void DoScroll() {
+            if (!following) return;
+            var old = rendering;
+            rendering = true;
+            try {
+                transcript.UpdateLayout();
+                transcript.ChangeView(null, double.MaxValue, null, disableAnimation);
+                latest.Visibility = Visibility.Collapsed;
+            } finally {
+                rendering = old;
+            }
+        }
+        DispatcherQueue.TryEnqueue(DoScroll);
+        _ = Task.Delay(60).ContinueWith(_ => DispatcherQueue.TryEnqueue(DoScroll));
+        _ = Task.Delay(180).ContinueWith(_ => DispatcherQueue.TryEnqueue(DoScroll));
+    }
+
     private async void SelectSessionAsync(string id, bool forceRefresh = false) {
         if (string.IsNullOrWhiteSpace(id) || !work.Connected) return;
         var epoch = ++sessionLoadEpoch;
         loadingSession = true;
+        following = true;
+        latest.Visibility = Visibility.Collapsed;
         notice.IsOpen = false;
         signature = "";
         ChatPage();
@@ -799,6 +832,7 @@ internal sealed class MainWindow : Window {
         try {
             await work.SelectAsync(id, forceRefresh);
             if (epoch == sessionLoadEpoch) {
+                following = true;
                 signature = "";
                 ChatPage();
             }
@@ -807,8 +841,10 @@ internal sealed class MainWindow : Window {
         } finally {
             if (epoch == sessionLoadEpoch) {
                 loadingSession = false;
+                following = true;
                 signature = "";
                 Render();
+                ScrollToBottom(true);
             }
         }
     }
@@ -1245,6 +1281,11 @@ internal sealed class MainWindow : Window {
         if (session != id) { session = id; following = true; }
         var offset = transcript.VerticalOffset;
         var tail = following;
+        if (conversationBody.ActualWidth > 32) {
+            var targetW = Math.Max(280, conversationBody.ActualWidth - 16);
+            messages.Width = targetW;
+            messages.MaxWidth = targetW;
+        }
         messages.Children.Clear();
 
         var allMessages = work.Selected?.Messages ?? [];
@@ -1470,11 +1511,19 @@ internal sealed class MainWindow : Window {
 
         welcome.Visibility = messages.Children.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         transcript.Visibility = messages.Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        DispatcherQueue.TryEnqueue(() => {
-            rendering = true;
-            transcript.ChangeView(null, tail ? transcript.ScrollableHeight : offset, null, true);
-            rendering = false;
-        });
+        if (tail) {
+            ScrollToBottom(true);
+        } else {
+            DispatcherQueue.TryEnqueue(() => {
+                var old = rendering;
+                rendering = true;
+                try {
+                    transcript.ChangeView(null, offset, null, true);
+                } finally {
+                    rendering = old;
+                }
+            });
+        }
     }
 
     internal static bool IsImageFile(string? nameOrPath, string? mime = null) {
@@ -1582,8 +1631,10 @@ internal sealed class MainWindow : Window {
 
     private UIElement CreateImageThumbnailCard(string remotePath, string displayName) {
         var previewFrame = new Grid {
-            Width = 164,
-            Height = 110,
+            MinWidth = 140,
+            MinHeight = 84,
+            MaxWidth = 340,
+            MaxHeight = 220,
             CornerRadius = new CornerRadius(8)
         };
         var placeholder = Ui.Stack(
@@ -1595,19 +1646,21 @@ internal sealed class MainWindow : Window {
         placeholder.Opacity = 0.65;
 
         var image = new Image {
-            Stretch = Stretch.UniformToFill,
+            Stretch = Stretch.Uniform,
+            MaxWidth = 340,
+            MaxHeight = 220,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
         previewFrame.Children.Add(placeholder);
         previewFrame.Children.Add(image);
 
-        var thumbBox = Ui.Surface(previewFrame, "LayerFillColorDefaultBrush", new Thickness(0), 8);
+        var thumbBox = Ui.Surface(previewFrame, "LayerFillColorDefaultBrush", new Thickness(4), 8);
 
         var titleText = Ui.Text(displayName, 12);
         titleText.TextWrapping = TextWrapping.NoWrap;
         titleText.TextTrimming = TextTrimming.CharacterEllipsis;
-        var bottomRow = new Grid { ColumnSpacing = 6, Width = 164 };
+        var bottomRow = new Grid { ColumnSpacing = 6, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
         bottomRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         bottomRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         bottomRow.Children.Add(Ui.FluentGlyph("\uE8B9", 12));
@@ -1619,7 +1672,7 @@ internal sealed class MainWindow : Window {
 
         var cardButton = Ui.Button(displayName, () => Run(() => PreviewImageAsync(remotePath, displayName)));
         cardButton.Content = cardBody;
-        cardButton.Padding = new Thickness(7, 7, 7, 6);
+        cardButton.Padding = new Thickness(8, 8, 8, 7);
         cardButton.CornerRadius = new CornerRadius(10);
         ToolTipService.SetToolTip(cardButton, $"点击放大预览：{displayName}");
 
@@ -1635,10 +1688,11 @@ internal sealed class MainWindow : Window {
         if (string.IsNullOrWhiteSpace(localFile) || !File.Exists(localFile)) return;
         DispatcherQueue.TryEnqueue(() => {
             try {
-                var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage { DecodePixelWidth = 360 };
+                var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
                 bmp.UriSource = new Uri(localFile);
                 targetImage.Source = bmp;
                 placeholder.Visibility = Visibility.Collapsed;
+                if (following) ScrollToBottom(true);
             } catch { }
         });
     }
@@ -1649,25 +1703,42 @@ internal sealed class MainWindow : Window {
             await SaveRemoteAsync(remotePath, displayName);
             return;
         }
+        var maxViewW = Math.Clamp(root.ActualWidth > 0 ? root.ActualWidth * 0.84 : 1120, 560, 1800);
+        var maxViewH = Math.Clamp(root.ActualHeight > 0 ? root.ActualHeight * 0.76 : 760, 420, 1100);
+
         var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(localFile));
         var img = new Image {
             Source = bmp,
             Stretch = Stretch.Uniform,
-            MaxHeight = 680,
+            MaxWidth = maxViewW,
+            MaxHeight = maxViewH,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
         var viewer = new ScrollViewer {
             Content = img,
             ZoomMode = ZoomMode.Enabled,
-            MinZoomFactor = 0.5f,
-            MaxZoomFactor = 4.0f,
+            MinZoomFactor = 0.25f,
+            MaxZoomFactor = 5.0f,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 700,
-            MinWidth = 640
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            MaxWidth = maxViewW + 16,
+            MaxHeight = maxViewH + 16
         };
-        var result = await DialogAsync(displayName, viewer, "关闭", "另存为…");
+        var dialog = new ContentDialog {
+            XamlRoot = root.XamlRoot,
+            Title = displayName,
+            Content = viewer,
+            PrimaryButtonText = "关闭",
+            SecondaryButtonText = "另存为…",
+            DefaultButton = ContentDialogButton.Primary,
+            RequestedTheme = root.RequestedTheme
+        };
+        dialog.Resources["ContentDialogMaxWidth"] = maxViewW + 80;
+        dialog.Resources["ContentDialogMaxHeight"] = maxViewH + 180;
+        var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Secondary) {
             await SaveRemoteAsync(remotePath, displayName);
         }
@@ -1706,13 +1777,15 @@ internal sealed class MainWindow : Window {
                 Text = code,
                 IsReadOnly = true,
                 AcceptsReturn = true,
-                TextWrapping = TextWrapping.NoWrap,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
                 FontFamily = new FontFamily("Cascadia Code, Consolas, monospace"),
                 FontSize = 12.5,
                 MaxHeight = 420,
                 CornerRadius = new CornerRadius(8)
             };
-            var wrap = new CheckBox { Content = "自动换行", FontSize = 12, MinWidth = 0 };
+            ScrollViewer.SetHorizontalScrollBarVisibility(box, ScrollBarVisibility.Auto);
+            var wrap = new CheckBox { Content = "自动换行", FontSize = 12, MinWidth = 0, IsChecked = true };
             wrap.Checked += (_, _) => box.TextWrapping = TextWrapping.Wrap;
             wrap.Unchecked += (_, _) => box.TextWrapping = TextWrapping.NoWrap;
 
