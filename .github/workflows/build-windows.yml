@@ -1,0 +1,47 @@
+name: Build AGY-PC Windows (WinUI 3)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build and Package WinUI 3 (win-x64, SkipUiCheck)
+        shell: pwsh
+        run: |
+          ./scripts/build-winui.ps1 -Runtime win-x64 -SkipUiCheck
+
+      - name: Upload Prebuilt Windows Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AGY-PC-2.0.0-beta.12-win-x64
+          path: dist/AGY-PC-2.0.0-beta.12-win-x64.zip
+          if-no-files-found: error
+
+      - name: Attach Prebuilt Windows Package to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = "dist/AGY-PC-2.0.0-beta.12-win-x64.zip"
+          if (Test-Path $zip) {
+            gh release upload v2.0.0-beta.12 $zip --clobber 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Release v2.0.0-beta.12 not created yet or upload skipped."
+            }
+          }

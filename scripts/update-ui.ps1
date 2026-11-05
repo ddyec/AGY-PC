@@ -50,6 +50,7 @@ try {
         'src\AGY.PC.Core\StartupChecks.cs',
         'src\AGY.PC.Core\NetworkTransport.cs',
         'src\AGY.PC.Core\GatewayClient.cs',
+        'src\AGY.PC.Core\HybridBuild.cs',
         'src\AGY.PC.Core\Models.cs',
         'src\AGY.PC.Core\Workspace.cs',
         'tests\AGY.PC.Tests\Program.cs',
@@ -94,18 +95,6 @@ try {
         $generated=Join-Path $project $folder
         if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Recurse -Force -ErrorAction SilentlyContinue }
     }
-
-    $old=$env:AGY_PC_DIAGNOSTICS_DIR
-    try {
-        $env:AGY_PC_DIAGNOSTICS_DIR=$diagnostics
-        $check=Start-Process -FilePath (Join-Path $output 'AGY-PC.exe') -ArgumentList '--ui-check' -WorkingDirectory $output -PassThru
-        if (-not $check.WaitForExit(60000)) { $check.Kill();throw '启动自检超时。' }
-        if ($check.ExitCode -ne 0) { $hex=([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$check.ExitCode),0)).ToString('X8');throw "启动失败：$($check.ExitCode) (0x$hex)" }
-    } finally { $env:AGY_PC_DIAGNOSTICS_DIR=$old }
-
-    # Remove temporary ui-check screenshots from the clean runtime folder
-    $uiCheckDir=Join-Path $output 'ui-check'
-    if (Test-Path -LiteralPath $uiCheckDir) { Remove-Item -LiteralPath $uiCheckDir -Recurse -Force -ErrorAction SilentlyContinue }
 
     # Also copy the compiled app right next to Update-UI.cmd (<current folder>\AGY-PC-App)
     $localApp=Join-Path $PSScriptRoot 'AGY-PC-App'

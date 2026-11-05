@@ -93,7 +93,42 @@ internal sealed class BuildPane {
         };
         log.TextChanged += (_, _) => { if (!string.IsNullOrEmpty(log.Text)) output.IsExpanded = true; };
 
+        var aiToggle = new ToggleSwitch {
+            Header = "允许 AI 自动在本机触发混合构建与打包（无需手工点按）",
+            IsOn = work.AiBuildsEnabled,
+            OnContent = "已开启 · AI 可直接调度 Windows 本机编译",
+            OffContent = "已暂停"
+        };
+        var aiStatusText = Ui.Caption(work.HybridStatus);
+        var aiToolsText = Ui.Caption(work.HybridTools.Length > 0 ? "已探测本机工具链：" + string.Join(" · ", work.HybridTools) : "连接服务器后自动探测 PowerShell / dotnet / wsl / node 等工具链");
+        var openBuildsFolder = Ui.Action("打开 AI 构建产物目录", Symbol.Folder, () => {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "AGY-Builds");
+            Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", dir) { UseShellExecute = true });
+        });
+        aiToggle.Toggled += (_, _) => {
+            if (work.AiBuildsEnabled != aiToggle.IsOn) work.SetAiBuildsEnabled(aiToggle.IsOn);
+        };
+        work.Changed += () => window.DispatcherQueue.TryEnqueue(() => {
+            if (aiToggle.IsOn != work.AiBuildsEnabled) aiToggle.IsOn = work.AiBuildsEnabled;
+            aiStatusText.Text = work.HybridStatus;
+            if (work.HybridTools.Length > 0) aiToolsText.Text = "已探测本机工具链：" + string.Join(" · ", work.HybridTools);
+        });
+        work.HybridLogLine += line => window.DispatcherQueue.TryEnqueue(() => {
+            if (log.Text.Length > 100000) log.Text = log.Text[^60000..];
+            log.Text += line + "\n";
+        });
+
+        var aiAutoSection = Ui.Stack(
+            Ui.Title("AI 自动混合构建（Windows 本机工作节点）", 16),
+            aiToggle,
+            aiStatusText,
+            aiToolsText,
+            Ui.Inline(openBuildsFolder));
+        aiAutoSection.Spacing = 10;
+
         var panel = Ui.Stack(
+            Ui.Card(aiAutoSection),
             Ui.Card(projectSection),
             Ui.Card(commandSection),
             output);

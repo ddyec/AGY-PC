@@ -77,4 +77,33 @@ public static class HybridBuild {
             else{System.IO.Directory.CreateDirectory(Path.GetDirectoryName(target)!);entry.ExtractToFile(target,false);}
         }
     }
+    public static string ConfinedPath(string relative, string rootDirectory) {
+        if (string.IsNullOrWhiteSpace(relative) || relative.StartsWith('/') || relative.StartsWith('\\') || relative.StartsWith('~') || relative.Contains(':'))
+            throw new InvalidOperationException("构建产物路径必须为项目内相对路径。");
+        var normalized = relative.Replace('\\', '/');
+        if (normalized.Split('/', StringSplitOptions.RemoveEmptyEntries).Any(p => p == ".."))
+            throw new InvalidOperationException("构建产物路径不能包含父目录跳转。");
+        var rootFull = Path.GetFullPath(rootDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var candidate = Path.GetFullPath(Path.Combine(rootDirectory, normalized.Replace('/', Path.DirectorySeparatorChar)));
+        if (!candidate.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("构建产物越过项目边界。");
+        return candidate;
+    }
+    public static string[] DetectTools() {
+        if (!OperatingSystem.IsWindows()) return ["dotnet", "python3"];
+        var found = new List<string> { "powershell" };
+        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var dirs = pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var tool in new[] { "dotnet", "pwsh", "wsl", "msbuild", "cmake", "node", "npm", "cargo", "python3", "make", "clang" }) {
+            foreach (var dir in dirs) {
+                try {
+                    if (File.Exists(Path.Combine(dir, tool + ".exe")) || File.Exists(Path.Combine(dir, tool + ".cmd")) || File.Exists(Path.Combine(dir, tool + ".bat"))) {
+                        found.Add(tool);
+                        break;
+                    }
+                } catch { }
+            }
+        }
+        return [..found.Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
 }

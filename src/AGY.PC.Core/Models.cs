@@ -15,7 +15,10 @@ public sealed record Credentials(string Address, string Token) {
         return new(url.GetLeftPart(UriPartial.Authority), token.Trim());
     }
 }
-public sealed record Capabilities(bool SeparateEffort, bool NativeApprovals, bool Artifacts, bool FileBrowser, bool DirectoryMentions, bool ProjectSnapshots=false);
+public sealed record Capabilities(bool SeparateEffort, bool NativeApprovals, bool Artifacts, bool FileBrowser, bool DirectoryMentions, bool ProjectSnapshots=false, bool AiHybridBuilds=false);
+public sealed record DeviceAck(string AccountProfile);
+public sealed record BuildJob(string Id, string SessionID, string Command, string Subdirectory, string[] Artifacts, double Deadline);
+public sealed record BuildDispatch(BuildJob? Job, string? Lease, string AccountProfile);
 public sealed record GatewayStatus(string Name, int Version, string[] Roots, string DefaultModel, string AccountProfile, Capabilities Capabilities);
 public sealed record ModelVariant(string Id, string Effort);
 public sealed record ModelFamily(string Id, string Name, ModelVariant[] Variants, string[] Efforts, string DefaultEffort) { public override string ToString() => Name; }
@@ -95,6 +98,7 @@ public sealed class ProfileState {
     public TaskSettings? Settings { get; set; }
     public string Presentation { get; set; } = "步骤摘要";
     public string Theme { get; set; } = "Default";
+    public bool AiBuildsEnabled { get; set; } = true;
     public BuildPlan? Build { get; set; }
     public PendingSend? Pending { get; set; }
     public Dictionary<string, Draft> Drafts { get; set; } = [];

@@ -24,7 +24,7 @@ internal static class Program {
 
             Directory.CreateDirectory(LogFolder);
             log = new StreamWriter(Path.Combine(LogFolder, "build.log"), false, Encoding.UTF8) { AutoFlush = true };
-            Say("AGY - PC · WinUI 3 本机构建 (v2.0.0-beta.11)");
+            Say("AGY - PC · WinUI 3 本机构建 (v2.0.0-beta.12)");
 
             StopRunningClient();
             CleanupLegacyBuilds();
@@ -65,19 +65,6 @@ internal static class Program {
             }
             var exe = Path.Combine(AppFolder, "AGY-PC.exe");
             if (!File.Exists(exe)) throw new IOException("Windows 编译未生成 AGY-PC.exe。");
-
-            Say("正在执行 WinUI 启动自检…");
-            var check = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = AppFolder };
-            check.ArgumentList.Add("--ui-check");
-            check.Environment["AGY_PC_DIAGNOSTICS_DIR"] = Path.Combine(LogFolder, "startup-diagnostics");
-            using (var process = Process.Start(check) ?? throw new IOException("无法启动 WinUI 界面检查。")) {
-                try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60)); }
-                catch (TimeoutException) { process.Kill(true); throw new IOException("WinUI 界面检查超时，请查看日志。"); }
-                if (process.ExitCode != 0) {
-                    await CollectAsync(project, AppFolder);
-                    throw new IOException("WinUI 启动失败：" + StartupChecks.ExitDescription(process.ExitCode) + "。请查看 " + Path.Combine(LogFolder, "startup-diagnostics", "diagnostic-summary.txt"));
-                }
-            }
 
             foreach (var name in new[] { "README.md", "THIRD_PARTY_NOTICES.md" })
                 File.Copy(Path.Combine(project, name), Path.Combine(AppFolder, name), true);

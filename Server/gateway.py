@@ -14,6 +14,9 @@ import threading
 import time
 import uuid
 import tempfile
+import shlex
+import sys
+from hybrid import HybridBroker, HybridError
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs, quote
@@ -59,8 +62,10 @@ class Gateway:
         self.db.commit()
         self.models_cache = None
         self.limits_cache = None
+        self.transcript_state = {}
         self.review = None
         self.review_directory = None
+        self.hybrid = HybridBroker(self)
         if self.profile_home:
             self.review_directory = tempfile.TemporaryDirectory(prefix="agy-review-")
             self.review = ApprovalBridge(Path(self.review_directory.name)/"gate.sock", self.approvals_changed)
@@ -302,14 +307,116 @@ class Gateway:
                 cli_prompt = (prompt or "请查看这些引用的文件或文件夹。") + "\n\nReferenced files and directories (full paths identify the selected context; use reading tools as needed; directory references refer to the whole folder, not a preloaded archive):\n" + references
             s["messages"].append({"id": rid, "role": "user", "text": prompt, "attachments": [self.attachment_info(a) for a in attached] + referenced})
             s["messages"].append({"id": str(uuid.uuid4()), "role": "assistant", "text": "", "tools": []})
-            if s["name"] == "新会话":
-                s["name"] = prompt.strip()[:40] or (attached + referenced)[0]["name"][:40]
+            self.sync_conversation_title(s)
             s["running"], s["error"], s["modified"] = True, "", time.time()
             # One transaction admits both the user message and its deduplication key.
             self.db.execute("INSERT INTO requests VALUES (?,?,?)", (rid, sid, digest))
             self.save(s)
             self.active.add(sid)
             threading.Thread(target=self.run, args=(sid, cli_prompt), daemon=True).start()
+            return s
+
+    def sync_transcript(self, s):
+        if not self.profile_home or not s.get("conversationID") or not s.get("messages"):
+            return False
+        m = s["messages"][-1]
+        if m.get("role") != "assistant":
+            return False
+        try:
+            uuid.UUID(s["conversationID"])
+            transcript = self.profile_home / ".gemini/antigravity-cli/brain" / s["conversationID"] / ".system_generated/logs/transcript.jsonl"
+            stat = transcript.stat()
+        except (ValueError, TypeError, AttributeError, OSError):
+            return False
+        sig = (stat.st_mtime_ns, stat.st_size)
+        if self.transcript_state.get(s["id"]) == sig:
+            return False
+        self.transcript_state[s["id"]] = sig
+        turn_steps = []
+        try:
+            with transcript.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    t = obj.get("type")
+                    if t == "USER_INPUT":
+                        turn_steps = []
+                    elif t == "PLANNER_RESPONSE":
+                        turn_steps.append(obj)
+        except OSError:
+            return False
+        if not turn_steps:
+            return False
+        parts = m.setdefault("steps", [])
+        changed = False
+        for obj in turn_steps:
+            idx = obj.get("step_index", 0)
+            thinking = (obj.get("thinking") or "").strip()
+            content = obj.get("content") or ""
+            if not thinking and not content:
+                continue
+            item = next((v for v in parts if v.get("index") == idx), None)
+            if item is None:
+                item = {"index": idx, "text": content}
+                if thinking:
+                    item["thinking"] = thinking
+                parts.append(item)
+                changed = True
+            else:
+                if thinking and item.get("thinking") != thinking:
+                    item["thinking"] = thinking
+                    changed = True
+                if content and not item.get("text"):
+                    item["text"] = content
+                    changed = True
+        if changed:
+            parts.sort(key=lambda v: v.get("index", 0))
+        return changed
+
+    def sync_conversation_title(self, s):
+        if not self.profile_home or not s.get("conversationID") or s.get("customName"):
+            return False
+        cid = s["conversationID"]
+        try:
+            uuid.UUID(cid)
+        except (ValueError, TypeError, AttributeError):
+            return False
+        title = ""
+        try:
+            meta_file = self.profile_home / ".gemini/antigravity-cli/cache/conversation_metadata.json"
+            if meta_file.is_file():
+                meta = json.loads(meta_file.read_text(encoding="utf-8", errors="replace"))
+                title = (meta.get("conversations", {}).get(cid, {}).get("summary", {}).get("Title") or "").strip()
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        if not title:
+            try:
+                db_path = self.profile_home / ".gemini/antigravity-cli/conversation_summaries.db"
+                if db_path.is_file():
+                    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1) as cdb:
+                        row = cdb.execute("SELECT title FROM conversation_summaries WHERE conversation_id=?", (cid,)).fetchone()
+                        if row and row[0]:
+                            title = str(row[0]).strip()
+            except (sqlite3.Error, OSError):
+                pass
+        if title and s.get("name") != title[:120]:
+            s["name"] = title[:120]
+            return True
+        return False
+
+    def refresh_live_transcript(self, sid):
+        with self.lock:
+            s = self.get(sid)
+            if s.get("running"):
+                t_changed = self.sync_transcript(s)
+                c_changed = self.sync_conversation_title(s)
+                if t_changed or c_changed:
+                    self.save(s)
             return s
 
     def ingest(self, sid, event):
@@ -331,17 +438,12 @@ class Gateway:
                     parts = m.setdefault("steps", [])
                     item = next((v for v in parts if v["index"] == idx), None)
                     if item is None:
-                        item = {"index": idx, "text": "", "thinking": ""}; parts.append(item)
-                    if step.get("text_delta"):
-                        item["text"] += step.get("text_delta", "")
-                    elif step.get("text") and not item["text"]:
-                        item["text"] = step["text"]
-                    if step.get("thinking_delta"):
-                        item["thinking"] = item.get("thinking", "") + step["thinking_delta"]
-                    elif step.get("thinking") and not item.get("thinking"):
-                        item["thinking"] = step["thinking"]
-                    if item["text"].strip():
-                        m["text"] = item["text"]
+                        item = {"index": idx, "text": ""}; parts.append(item)
+                    item["text"] += step.get("text_delta", "")
+                    thinking_delta = step.get("thinking_delta") or step.get("thinking") or ""
+                    if thinking_delta:
+                        item["thinking"] = item.get("thinking", "") + thinking_delta
+                    m["text"] = item["text"]
                 if step.get("step_type") == "tool":
                     # Tool events may carry ACTIVE followed by DONE: replace by step identity.
                     info = step.get("tool_info", {})
@@ -349,15 +451,15 @@ class Gateway:
                             "state": step.get("state", ""), "parameters": info.get("parameters", {}), "output": str(info.get("output", ""))[:100000], "isError": bool(info.get("error"))}
                     tools = [t for t in m.setdefault("tools", []) if t["id"] != tool["id"]]
                     m["tools"] = tools + [tool]
+            self.sync_transcript(s)
+            self.sync_conversation_title(s)
             if kind == "result":
                 result = event.get("result", {})
-                if result.get("response"):
+                non_empty = [st["text"] for st in m.get("steps", []) if st.get("text", "").strip()]
+                if len(non_empty) >= 2 and m.get("tools"):
+                    m["text"] = non_empty[-1]
+                elif result.get("response"):
                     m["text"] = result["response"]
-                elif not m.get("text"):
-                    for step_item in reversed(m.get("steps", [])):
-                        if step_item.get("text", "").strip():
-                            m["text"] = step_item["text"]
-                            break
                 m["usage"] = result.get("usage", {})
                 s["error"] = result.get("error", "")
                 if result.get("status") != "SUCCESS" and not s["error"]:
@@ -366,6 +468,7 @@ class Gateway:
 
     def run(self, sid, prompt):
         process, terminal, failure, run_token = None, False, "", None
+        build_token = None
         try:
             s = self.get(sid)
             # stdin keeps the prompt out of process listings; no shell interpolation.
@@ -380,6 +483,9 @@ class Gateway:
                            AGY_IPHONE_REVIEW_SOCKET=self.review.path)
                 args += ["--settings", json.dumps({"toolPermission": "always-proceed" if s["approvalMode"] == "turbo" else "request-review",
                                                   "artifactReviewPolicy": "always-proceed", "enableTerminalSandbox": False})]
+            build_token, context_file = self.hybrid.begin(sid, run_token)
+            helper = shlex.quote(sys.executable) + " " + shlex.quote(str(Path(__file__).with_name("device_tool.py").resolve())) + " --context " + shlex.quote(str(context_file))
+            prompt += "\n\n[Connected build execution capability]\nFor build/test/package tasks first inspect project manifests and run: " + helper + " inspect\nWeb/server/Linux work should use your server terminal. For macOS/Apple targets, automatically dispatch the online Intel Mac with: " + helper + " build --command '<actual command>' --subdirectory '<project directory relative to session workspace>' --artifact '<output relative to that project directory>' (repeat --artifact for outputs). No manual build panel action is needed. This snapshots the current server project to a fresh Mac copy, executes, then returns exit status, log and uploaded artifact paths to this tool call. Set a long terminal wait or poll your terminal operation until complete. On failure read the real log, fix source on server and dispatch a fresh build. If no Mac/toolchain is online report that; never pretend a Linux build validates Apple UI. Treat unknown/disconnected execution as unknown; never automatically retry it. Approval policy still applies. Do not use old context paths from earlier turns. The command executes outside a sandbox on the connected Mac.\n"
             if s["conversationID"]:
                 args += ["--conversation", s["conversationID"]]
             with self.lock:
@@ -405,6 +511,7 @@ class Gateway:
         except Exception as error:
             failure = error.message if isinstance(error, Failure) else "AGY 执行中断，请检查会话后再试。"
         finally:
+            if build_token: self.hybrid.finish(build_token)
             if run_token and self.review: self.review.finish(run_token)
             if process and process.poll() is None:
                 self.terminate(process)
@@ -414,6 +521,8 @@ class Gateway:
                     process.stdin.close()
             with self.lock:
                 s = self.get(sid)
+                self.sync_transcript(s)
+                self.sync_conversation_title(s)
                 s["running"] = False
                 s["approvals"] = []
                 s["modified"] = time.time()
@@ -443,6 +552,7 @@ class Gateway:
             if s["running"]:
                 self.stopping.add(sid)
             process = self.processes.get(sid)
+        self.hybrid.cancel(sid)
         if self.review: self.review.cancel(sid)
         if process:
             self.terminate(process)
@@ -454,6 +564,7 @@ class Gateway:
         with self.lock:
             s = self.get(sid)
             s["name"] = name.strip()
+            s["customName"] = True
             self.save(s)
             return s
 
@@ -602,18 +713,22 @@ class Gateway:
         finally:
             for fd in reversed(descriptors): os.close(fd)
 
-    def project_snapshot(self, sid, raw=""):
+    def project_snapshot(self, sid, raw="", allow_running=False):
         import zipfile
         session = self.get(sid)
-        if session["running"]: raise Failure(409, "请等待当前任务结束后同步项目")
+        if session["running"] and not allow_running: raise Failure(409, "请等待当前任务结束后同步项目")
         cwd = Path(self.workspace(session["cwd"]))
         requested = Path(raw) if raw else cwd
         target = requested if requested.is_absolute() else cwd/requested
+        if ".." not in target.parts and target in cwd.parents and any(target == r or r in target.parents for r in self.roots):
+            target = cwd
         if ".." in target.parts or not (target == cwd or cwd in target.parents):
             raise Failure(403, "只能同步当前会话的项目目录")
+        if target == Path("/home/ubuntu/test") and (target / "AGY-PC").is_dir():
+            target = target / "AGY-PC"
         self.open_file(sid, str(target), directory=True)
         relative_root = target.relative_to(cwd)
-        excluded = {".git", ".gemini", ".ssh", ".aws", ".codex", ".agents", ".agy-uploads", "node_modules", "bin", "obj", "dist", "build", ".venv", "venv", "__pycache__"}
+        excluded = {".git", ".gemini", ".ssh", ".aws", ".codex", ".agents", ".build", ".swiftpm", ".agy-uploads", "node_modules", "bin", "obj", "dist", "build", ".venv", "venv", "__pycache__"}
         archive = tempfile.TemporaryFile(mode="w+b")
         total, count = 0, 0
         queue = [relative_root]
@@ -667,15 +782,9 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Never log URLs, messages or Authorization headers.
 
     def respond(self, code, value):
-        import gzip
         data = json.dumps(value, ensure_ascii=False).encode()
-        use_gzip = len(data) > 1024 and "gzip" in self.headers.get("Accept-Encoding", "")
-        if use_gzip:
-            data = gzip.compress(data, compresslevel=5)
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        if use_gzip:
-            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -723,7 +832,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {"name": "AGY", "version": 1, "roots": list(map(str, gateway.roots)),
                                           "defaultModel": gateway.default_model, "conversationScope": "gateway",
                                           "accountProfile": gateway.account_profile,
-                                          "capabilities": {"separateEffort": True, "nativeApprovals": gateway.review is not None, "artifacts": True, "fileBrowser": True, "directoryMentions": True, "projectSnapshots": True}})
+                                          "capabilities": {"separateEffort": True, "nativeApprovals": gateway.review is not None, "artifacts": True, "fileBrowser": True, "directoryMentions": True, "projectSnapshots": True, "aiHybridBuilds": True}})
+            device_register = re.fullmatch(r"/v1/sessions/([a-f0-9-]{36})/device", path)
+            device_poll = re.fullmatch(r"/v1/devices/([a-f0-9-]{36})/poll", path)
+            build_update = re.fullmatch(r"/v1/builds/([a-f0-9-]{36})", path)
+            try:
+                if device_register and self.command == "POST":
+                    return self.respond(200, gateway.hybrid.register(device_register[1],body))
+                if device_poll and self.command == "POST":
+                    return self.respond(200, gateway.hybrid.poll(device_poll[1], body))
+                if build_update and self.command == "POST":
+                    return self.respond(200, gateway.hybrid.update(build_update[1],body))
+            except HybridError as error:
+                raise Failure(409,str(error))
             if self.command == "GET" and path == "/v1/models":
                 models = gateway.models(refresh=query.get("refresh") == ["1"])
                 return self.respond(200, {"models": models, "families": catalog.families(models)})
@@ -745,7 +866,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, gateway.list_files(listing[1], query.get("scope", ["workspace"])[0], query.get("path", [""])[0]))
             artifact = re.fullmatch(r"/v1/sessions/([a-f0-9-]{36})/(files|snapshot)", path)
             if artifact and self.command == "GET":
-                stream, name, size = (gateway.project_snapshot(artifact[1], query.get("path", [""])[0]) if artifact[2] == "snapshot" else gateway.open_file(artifact[1], query.get("path", [""])[0]))
+                live_build = False
+                if artifact[2] == "snapshot" and query.get("build"):
+                    try:
+                        subtree = gateway.hybrid.authorize_snapshot(artifact[1], query["build"][0], query.get("lease",[""])[0])
+                        if Path(query.get("path",[""])[0] or ".") != Path(subtree): raise HybridError("Snapshot path differs from approved build project")
+                        live_build = True
+                    except HybridError as error: raise Failure(409,str(error))
+                stream, name, size = (gateway.project_snapshot(artifact[1], query.get("path", [""])[0],allow_running=live_build) if artifact[2] == "snapshot" else gateway.open_file(artifact[1], query.get("path", [""])[0]))
                 with stream:
                     self.send_response(200)
                     self.send_header("Content-Type", mimetypes.guess_type(name)[0] or "application/octet-stream")
@@ -809,7 +937,7 @@ class Handler(BaseHTTPRequestHandler):
             if not s["running"]:
                 break
             time.sleep(0.3)
-            s = gateway.get(sid)
+            s = gateway.refresh_live_transcript(sid)
 
     do_GET = do_POST = do_PATCH = do_DELETE = route
 
@@ -846,6 +974,7 @@ def main():
         for sid in list(gateway.active):
             gateway.stop(sid)
         server.server_close()
+        gateway.hybrid.close()
         if gateway.review: gateway.review.close()
         if gateway.review_directory: gateway.review_directory.cleanup()
 

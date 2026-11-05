@@ -18,10 +18,11 @@ internal sealed class MainWindow : Window {
     private readonly Grid conversationBody = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBlock quickModelLabel = new() { TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center };
     private readonly ScrollViewer approvalScroll = new() { MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-        referenceScroll = new() { MaxHeight = 96, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+        referenceScroll = new() { MaxHeight = 128, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         queueScroll = new() { MaxHeight = 156, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly Button quickModel = new() { MinHeight = 32, Height = 32, Padding = new Thickness(10, 4, 10, 4), CornerRadius = new CornerRadius(8) };
     private UIElement welcome = null!;
+    private UIElement? activeImageOverlay;
     private string historySignature = "", effortFamily = "", dismissedNoticeKey = "";
     private ModelFamily[]? catalog;
     private readonly InfoBar notice = new() { IsClosable = true };
@@ -32,7 +33,7 @@ internal sealed class MainWindow : Window {
         MaxHeight = 180,
         FontSize = 14,
         Padding = new Thickness(2, 2, 2, 8),
-        PlaceholderText = "输入消息，或输入 @ 引用文件…"
+        PlaceholderText = "输入消息，输入 @ 引用文件，或按 Ctrl+V 直接粘贴图片/截图…"
     };
     private readonly StackPanel messages = new() { Spacing = 18, HorizontalAlignment = HorizontalAlignment.Stretch },
         references = new() { Orientation = Orientation.Horizontal, Spacing = 6 },
@@ -168,6 +169,11 @@ internal sealed class MainWindow : Window {
 
         root.SizeChanged += (_, _) => shell.Resize(root.ActualWidth);
         root.KeyDown += (_, e) => {
+            if (e.Key == VirtualKey.Escape && activeImageOverlay is not null) {
+                e.Handled = true;
+                CloseImageOverlay();
+                return;
+            }
             if (e.Key == VirtualKey.N && Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down) && work.Connected && work.Pending is null) {
                 e.Handled = true;
                 work.NewConversation();
@@ -183,6 +189,21 @@ internal sealed class MainWindow : Window {
                 UpdateSendState();
                 if (composer.Text.EndsWith('@') && !mentionOpen) Run(MentionAsync);
             } catch (Exception e) { Error(e); }
+        };
+        composer.Paste += (_, e) => {
+            if (TryHandleClipboardAttachmentPaste()) {
+                e.Handled = true;
+            }
+        };
+        composer.PreviewKeyDown += (_, e) => {
+            if (e.Key == VirtualKey.V) {
+                var ctrlDown = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+                var shiftDown = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+                if (ctrlDown && !shiftDown && TryHandleClipboardAttachmentPaste()) {
+                    e.Handled = true;
+                    return;
+                }
+            }
         };
         composer.KeyDown += (_, e) => {
             if (e.Key != VirtualKey.Enter) return;
@@ -501,9 +522,10 @@ internal sealed class MainWindow : Window {
         quickModel.MaxWidth = 260;
 
         var attachBtn = Ui.ToolbarButton("附件", Symbol.Attach, "上传文件到当前对话", () => Run(UploadAsync));
+        var pasteBtn = Ui.ToolbarButton("粘贴图片", Symbol.Paste, "从剪贴板直接粘贴截图或文件（Ctrl+V）", () => Run(() => PasteClipboardAsync(Clipboard.GetContent(), true)));
         var mentionBtn = Ui.ToolbarButton("@ 引用", null, "引用工作区文件、文件夹或指定路径", () => Run(MentionAsync));
         var skillsBtn = Ui.ToolbarButton("/ 技能与指令", null, "选择斜杠工作流或 Skills", () => Run(SkillsPickerAsync));
-        var actions = Ui.Inline(attachBtn, mentionBtn, skillsBtn, quickModel);
+        var actions = Ui.Inline(attachBtn, pasteBtn, mentionBtn, skillsBtn, quickModel);
         actions.Spacing = 6;
         var actionsScroll = new ScrollViewer {
             Content = actions,
@@ -1032,8 +1054,42 @@ internal sealed class MainWindow : Window {
 
             references.Children.Clear();
             foreach (var r in work.Draft.References) {
-                var chip = Ui.ToolbarButton("@ " + r.Label + "  ×", null, "移除此引用", () => Run(() => { work.RemoveReference(r.Path); return Task.CompletedTask; }));
-                references.Children.Add(chip);
+                var capturedRef = r;
+                if (!r.Directory && IsImageFile(r.Path)) {
+                    var thumbImg = new Image {
+                        Stretch = Stretch.Uniform,
+                        MaxWidth = 96,
+                        MaxHeight = 56,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    var thumbHost = new Grid {
+                        MinWidth = 48,
+                        MinHeight = 36,
+                        MaxWidth = 96,
+                        MaxHeight = 56,
+                        CornerRadius = new CornerRadius(6)
+                    };
+                    var thumbIcon = Ui.Glyph(Symbol.Pictures, 16);
+                    thumbIcon.Opacity = 0.6;
+                    thumbHost.Children.Add(thumbIcon);
+                    thumbHost.Children.Add(thumbImg);
+                    if (!uiCheck) _ = LoadImageThumbnailAsync(capturedRef.Path, thumbImg, thumbIcon);
+
+                    var previewBtn = Ui.Button(capturedRef.Label, () => Run(() => PreviewImageAsync(capturedRef.Path, capturedRef.Label)));
+                    previewBtn.Content = Ui.Inline(thumbHost, Ui.Caption(capturedRef.Label));
+                    previewBtn.Padding = new Thickness(6, 4, 8, 4);
+                    previewBtn.CornerRadius = new CornerRadius(8);
+                    ToolTipService.SetToolTip(previewBtn, "点击全屏完整预览此图片");
+
+                    var removeBtn = Ui.ToolbarButton("×", null, "移除此图片", () => Run(() => { work.RemoveReference(capturedRef.Path); return Task.CompletedTask; }));
+                    var chipRow = Ui.Inline(previewBtn, removeBtn);
+                    chipRow.Spacing = 2;
+                    references.Children.Add(chipRow);
+                } else {
+                    var chip = Ui.ToolbarButton("@ " + capturedRef.Label + "  ×", null, "移除此引用", () => Run(() => { work.RemoveReference(capturedRef.Path); return Task.CompletedTask; }));
+                    references.Children.Add(chip);
+                }
             }
 
             pending.Children.Clear();
@@ -1295,9 +1351,19 @@ internal sealed class MainWindow : Window {
             var isRunningHere = isLast && work.Selected?.Running == true && message.Role != "user";
 
             var cleanMessageText = FileRules.CleanText(message.Text);
-            if (message.Role != "user" && cleanMessageText.Length == 0 && !isRunningHere) {
-                var fallbackStep = (message.Steps ?? []).LastOrDefault(s => FileRules.CleanText(s.Text).Length > 0);
-                if (fallbackStep is not null) cleanMessageText = FileRules.CleanText(fallbackStep.Text);
+            if (message.Role != "user") {
+                var nonEmptySteps = (message.Steps ?? [])
+                    .Select(s => FileRules.CleanText(s.Text))
+                    .Where(t => t.Length > 0)
+                    .ToArray();
+                if (cleanMessageText.Length == 0 && !isRunningHere && nonEmptySteps.Length > 0) {
+                    cleanMessageText = nonEmptySteps[^1];
+                } else if (nonEmptySteps.Length >= 2 && (message.Tools?.Length ?? 0) > 0) {
+                    var lastStepText = nonEmptySteps[^1];
+                    if (cleanMessageText.Length > lastStepText.Length && cleanMessageText.EndsWith(lastStepText, StringComparison.Ordinal)) {
+                        cleanMessageText = lastStepText;
+                    }
+                }
             }
 
             var processItems = new List<(int Order, string Kind, string Title, string RawText, Func<UIElement> ContentFactory)>();
@@ -1310,7 +1376,7 @@ internal sealed class MainWindow : Window {
                         processItems.Add((step.Index * 2, "thinking", "思考摘要 · " + summary, capturedThinking, () => MessageText(capturedThinking)));
                     }
                     var cleanStepText = FileRules.CleanText(step.Text);
-                    if (cleanStepText.Length > 0 && cleanStepText != cleanMessageText) {
+                    if (cleanStepText.Length > 0 && (isRunningHere || cleanStepText != cleanMessageText)) {
                         var summary = SummarizeLine(cleanStepText, "中间进展");
                         var capturedStep = cleanStepText;
                         processItems.Add((step.Index * 2 + 1, "step", "阶段进展 · " + summary, capturedStep, () => MessageText(capturedStep)));
@@ -1401,55 +1467,72 @@ internal sealed class MainWindow : Window {
                     panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在输出…")));
                 }
             } else if (work.Presentation == "步骤摘要") {
-                // 思考摘要 · 自动折叠工具：直接展示思考过程与阶段进展，方便实时观察是否跑偏并随时「立即引导」；所有工具调用与执行记录自动折叠
+                // 两阶段展示：
+                // 1) 思考/执行中 (isRunningHere == true)：直接展示思考摘要与阶段进展，并自动折叠工具调用；
+                // 2) 回答完成后 (isRunningHere == false)：将所有思考摘要、中间步骤与工具调用全部折叠为一个摘要条，仅在下方展示最终 Markdown 回答。
                 var thoughtItems = processItems.Where(p => p.Kind is "thinking" or "step").ToArray();
                 var toolItems = processItems.Where(p => p.Kind == "tool").ToArray();
 
-                if (thoughtItems.Length > 0) {
-                    var thoughtStack = Ui.Stack();
-                    thoughtStack.Spacing = 8;
-                    var inlineStart = thoughtItems.Length > 6 ? thoughtItems.Length - 4 : 0;
-                    if (inlineStart > 0) {
-                        var earlyThoughts = thoughtItems.Take(inlineStart).ToArray();
-                        thoughtStack.Children.Add(LazyExpander(
-                            $"展开早期 {earlyThoughts.Length} 段思考记录",
+                UIElement BuildThoughtAndToolStack() {
+                    var combined = Ui.Stack();
+                    combined.Spacing = 8;
+                    if (thoughtItems.Length > 0) {
+                        var thoughtStack = Ui.Stack();
+                        thoughtStack.Spacing = 8;
+                        var inlineStart = thoughtItems.Length > 6 ? thoughtItems.Length - 4 : 0;
+                        if (inlineStart > 0) {
+                            var earlyThoughts = thoughtItems.Take(inlineStart).ToArray();
+                            thoughtStack.Children.Add(LazyExpander(
+                                $"展开早期 {earlyThoughts.Length} 段思考记录",
+                                () => {
+                                    var earlyStack = Ui.Stack();
+                                    earlyStack.Spacing = 8;
+                                    foreach (var early in earlyThoughts) earlyStack.Children.Add(RenderProcessItem(early));
+                                    return earlyStack;
+                                },
+                                8));
+                        }
+                        for (var tIdx = inlineStart; tIdx < thoughtItems.Length; tIdx++) {
+                            thoughtStack.Children.Add(RenderProcessItem(thoughtItems[tIdx]));
+                        }
+                        combined.Children.Add(thoughtStack);
+                    }
+                    if (toolItems.Length > 0) {
+                        combined.Children.Add(LazyExpander(
+                            $"已自动折叠 {toolItems.Length} 次工具调用与执行记录",
                             () => {
-                                var earlyStack = Ui.Stack();
-                                earlyStack.Spacing = 8;
-                                foreach (var early in earlyThoughts) earlyStack.Children.Add(RenderProcessItem(early));
-                                return earlyStack;
+                                var toolStack = Ui.Stack();
+                                toolStack.Spacing = 6;
+                                for (var k = 0; k < toolItems.Length; k++) {
+                                    var toolItem = toolItems[k];
+                                    toolStack.Children.Add(LazyExpander($"{k + 1}. {toolItem.Title}", toolItem.ContentFactory, 8));
+                                }
+                                return toolStack;
                             },
                             8));
                     }
-                    for (var tIdx = inlineStart; tIdx < thoughtItems.Length; tIdx++) {
-                        thoughtStack.Children.Add(RenderProcessItem(thoughtItems[tIdx]));
-                    }
-                    panel.Children.Add(thoughtStack);
-                }
-
-                if (toolItems.Length > 0) {
-                    panel.Children.Add(LazyExpander(
-                        $"已自动折叠 {toolItems.Length} 次工具调用与执行记录",
-                        () => {
-                            var toolStack = Ui.Stack();
-                            toolStack.Spacing = 6;
-                            for (var k = 0; k < toolItems.Length; k++) {
-                                var toolItem = toolItems[k];
-                                toolStack.Children.Add(LazyExpander($"{k + 1}. {toolItem.Title}", toolItem.ContentFactory, 8));
-                            }
-                            return toolStack;
-                        },
-                        8));
+                    return combined;
                 }
 
                 if (isRunningHere) {
-                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在思考与执行…")));
-                }
-                if (cleanMessageText.Length > 0) {
                     if (thoughtItems.Length > 0 || toolItems.Length > 0) {
-                        panel.Children.Add(Ui.Divider());
+                        panel.Children.Add(BuildThoughtAndToolStack());
                     }
-                    panel.Children.Add(MessageText(cleanMessageText, messageLinks));
+                    panel.Children.Add(Ui.Inline(new ProgressRing { Width = 16, Height = 16, IsActive = true }, Ui.Caption("AGY 正在思考与执行…")));
+                    if (cleanMessageText.Length > 0 && thoughtItems.Length == 0) {
+                        panel.Children.Add(MessageText(cleanMessageText, messageLinks));
+                    }
+                } else {
+                    if (thoughtItems.Length > 0 || toolItems.Length > 0) {
+                        var summaryParts = new List<string>();
+                        if (thoughtItems.Length > 0) summaryParts.Add($"{thoughtItems.Length} 段思考摘要");
+                        if (toolItems.Length > 0) summaryParts.Add($"{toolItems.Length} 次工具调用");
+                        var foldedLabel = "已折叠思考摘要与工具调用（" + string.Join(" · ", summaryParts) + "）";
+                        panel.Children.Add(LazyExpander(foldedLabel, BuildThoughtAndToolStack, 8));
+                    }
+                    if (cleanMessageText.Length > 0) {
+                        panel.Children.Add(MessageText(cleanMessageText, messageLinks));
+                    }
                 }
             } else {
                 // 结论优先：顶部直接展示最终结论，中间思考过程与工具调用统一收入底部折叠面板
@@ -1633,13 +1716,13 @@ internal sealed class MainWindow : Window {
         var previewFrame = new Grid {
             MinWidth = 140,
             MinHeight = 84,
-            MaxWidth = 340,
-            MaxHeight = 220,
+            MaxWidth = 520,
+            MaxHeight = 360,
             CornerRadius = new CornerRadius(8)
         };
         var placeholder = Ui.Stack(
             Ui.Glyph(Symbol.Pictures, 22),
-            Ui.Caption("点击预览大图"));
+            Ui.Caption("点击预览完整大图"));
         placeholder.Spacing = 4;
         placeholder.HorizontalAlignment = HorizontalAlignment.Center;
         placeholder.VerticalAlignment = VerticalAlignment.Center;
@@ -1647,8 +1730,8 @@ internal sealed class MainWindow : Window {
 
         var image = new Image {
             Stretch = Stretch.Uniform,
-            MaxWidth = 340,
-            MaxHeight = 220,
+            MaxWidth = 520,
+            MaxHeight = 360,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -1660,7 +1743,7 @@ internal sealed class MainWindow : Window {
         var titleText = Ui.Text(displayName, 12);
         titleText.TextWrapping = TextWrapping.NoWrap;
         titleText.TextTrimming = TextTrimming.CharacterEllipsis;
-        var bottomRow = new Grid { ColumnSpacing = 6, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var bottomRow = new Grid { ColumnSpacing = 6, MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Stretch };
         bottomRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         bottomRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         bottomRow.Children.Add(Ui.FluentGlyph("\uE8B9", 12));
@@ -1674,7 +1757,7 @@ internal sealed class MainWindow : Window {
         cardButton.Content = cardBody;
         cardButton.Padding = new Thickness(8, 8, 8, 7);
         cardButton.CornerRadius = new CornerRadius(10);
-        ToolTipService.SetToolTip(cardButton, $"点击放大预览：{displayName}");
+        ToolTipService.SetToolTip(cardButton, $"点击全屏完整预览（无裁切）：{displayName}");
 
         if (!uiCheck) {
             _ = LoadImageThumbnailAsync(remotePath, image, placeholder);
@@ -1697,51 +1780,314 @@ internal sealed class MainWindow : Window {
         });
     }
 
+    private void CloseImageOverlay() {
+        if (activeImageOverlay is not null) {
+            root.Children.Remove(activeImageOverlay);
+            activeImageOverlay = null;
+        }
+    }
+
     internal async Task PreviewImageAsync(string remotePath, string displayName) {
         var localFile = await work.GetCachedImageFileAsync(remotePath);
         if (string.IsNullOrWhiteSpace(localFile) || !File.Exists(localFile)) {
             await SaveRemoteAsync(remotePath, displayName);
             return;
         }
-        var maxViewW = Math.Clamp(root.ActualWidth > 0 ? root.ActualWidth * 0.84 : 1120, 560, 1800);
-        var maxViewH = Math.Clamp(root.ActualHeight > 0 ? root.ActualHeight * 0.76 : 760, 420, 1100);
+
+        CloseImageOverlay();
+
+        var overlay = new Grid {
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(224, 12, 14, 18)),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            RowSpacing = 10,
+            Padding = new Thickness(24, 16, 24, 20)
+        };
+        overlay.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        overlay.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRowSpan(overlay, 2);
+        Canvas.SetZIndex(overlay, 1200);
 
         var bmp = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(localFile));
-        var img = new Image {
+        var dimCaption = Ui.Caption("完整等比例显示 · 不裁切");
+
+        // 1. Default mode: Direct Image inside the *-sized Grid cell so WinUI 3 passes finite window bounds and fits 100% of the image without any cropping or scrollbars
+        var fitImg = new Image {
             Source = bmp,
             Stretch = Stretch.Uniform,
-            MaxWidth = maxViewW,
-            MaxHeight = maxViewH,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var viewer = new ScrollViewer {
-            Content = img,
-            ZoomMode = ZoomMode.Enabled,
-            MinZoomFactor = 0.25f,
-            MaxZoomFactor = 5.0f,
+
+        // 2. Zoom mode: Explicit pixel dimensions inside a ScrollViewer for 1:1 / zoomed inspection
+        var zoomImg = new Image {
+            Source = bmp,
+            Stretch = Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var zoomViewer = new ScrollViewer {
+            Content = zoomImg,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            MaxWidth = maxViewW + 16,
-            MaxHeight = maxViewH + 16
+            VerticalContentAlignment = HorizontalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Visibility = Visibility.Collapsed
         };
-        var dialog = new ContentDialog {
-            XamlRoot = root.XamlRoot,
-            Title = displayName,
-            Content = viewer,
-            PrimaryButtonText = "关闭",
-            SecondaryButtonText = "另存为…",
-            DefaultButton = ContentDialogButton.Primary,
-            RequestedTheme = root.RequestedTheme
-        };
-        dialog.Resources["ContentDialogMaxWidth"] = maxViewW + 80;
-        dialog.Resources["ContentDialogMaxHeight"] = maxViewH + 180;
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Secondary) {
-            await SaveRemoteAsync(remotePath, displayName);
+
+        int pixelW = 1280, pixelH = 720;
+        double zoomScale = 1.0;
+        bool isFitMode = true;
+
+        void UpdateViewMode() {
+            if (isFitMode) {
+                fitImg.Visibility = Visibility.Visible;
+                zoomViewer.Visibility = Visibility.Collapsed;
+                dimCaption.Text = pixelW > 0 && pixelH > 0
+                    ? $"{pixelW} × {pixelH} px  ·  适应窗口（完整显示）"
+                    : "适应窗口（完整显示）";
+            } else {
+                fitImg.Visibility = Visibility.Collapsed;
+                zoomViewer.Visibility = Visibility.Visible;
+                zoomImg.Width = Math.Max(64, Math.Round(pixelW * zoomScale));
+                zoomImg.Height = Math.Max(64, Math.Round(pixelH * zoomScale));
+                dimCaption.Text = $"{pixelW} × {pixelH} px  ·  缩放 {Math.Round(zoomScale * 100)}%";
+            }
         }
+
+        bmp.ImageOpened += (_, _) => {
+            if (bmp.PixelWidth > 0 && bmp.PixelHeight > 0) {
+                pixelW = bmp.PixelWidth;
+                pixelH = bmp.PixelHeight;
+                UpdateViewMode();
+            }
+        };
+
+        var fitBtn = Ui.ToolbarButton("适应窗口（完整显示）", Symbol.FullScreen, "将整张图片等比例完整显示在窗口内，不裁切任何边缘", () => {
+            isFitMode = true;
+            UpdateViewMode();
+        });
+        var actualBtn = Ui.ToolbarButton("1:1 原始大小", null, "按图片原始像素 100% 显示，可滚动查看细节", () => {
+            isFitMode = false;
+            zoomScale = 1.0;
+            UpdateViewMode();
+        });
+        var zoomOutBtn = Ui.ToolbarButton("缩小 (-)", null, "缩小图片", () => {
+            isFitMode = false;
+            zoomScale = Math.Clamp(zoomScale * 0.8, 0.2, 5.0);
+            UpdateViewMode();
+        });
+        var zoomInBtn = Ui.ToolbarButton("放大 (+)", null, "放大图片", () => {
+            isFitMode = false;
+            zoomScale = Math.Clamp(zoomScale * 1.25, 0.2, 5.0);
+            UpdateViewMode();
+        });
+        var saveBtn = Ui.Action("另存为…", Symbol.Save, () => Run(() => SaveRemoteAsync(remotePath, displayName)));
+        var closeBtn = Ui.Action("关闭 (Esc)", Symbol.Cancel, CloseImageOverlay, true);
+
+        var headerBar = new Grid { ColumnSpacing = 12 };
+        headerBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var titleStack = Ui.Inline(Ui.Title(displayName, 14.5), dimCaption);
+        titleStack.Spacing = 12;
+        headerBar.Children.Add(titleStack);
+
+        var btnRow = Ui.Inline(fitBtn, actualBtn, zoomOutBtn, zoomInBtn, saveBtn, closeBtn);
+        btnRow.Spacing = 6;
+        Grid.SetColumn(btnRow, 1);
+        headerBar.Children.Add(btnRow);
+
+        var headerSurface = Ui.Surface(headerBar, "CardBackgroundFillColorDefaultBrush", new Thickness(16, 10, 14, 10), 12);
+        overlay.Children.Add(headerSurface);
+
+        var stageGrid = new Grid {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(1, 0, 0, 0))
+        };
+        stageGrid.Tapped += (_, e) => {
+            if (ReferenceEquals(e.OriginalSource, stageGrid)) {
+                CloseImageOverlay();
+            }
+        };
+        stageGrid.Children.Add(fitImg);
+        stageGrid.Children.Add(zoomViewer);
+        Grid.SetRow(stageGrid, 1);
+        overlay.Children.Add(stageGrid);
+
+        activeImageOverlay = overlay;
+        root.Children.Add(overlay);
+    }
+
+    private bool TryHandleClipboardAttachmentPaste() {
+        if (!work.Connected || busy || work.Pending is not null) return false;
+        try {
+            var dataView = Clipboard.GetContent();
+            if (dataView.Contains(StandardDataFormats.StorageItems)) {
+                Run(() => PasteClipboardAsync(dataView, true));
+                return true;
+            }
+            if (dataView.Contains(StandardDataFormats.Bitmap) && !dataView.Contains(StandardDataFormats.Text)) {
+                Run(() => PasteClipboardAsync(dataView, true));
+                return true;
+            }
+        } catch { }
+        return false;
+    }
+
+    private async Task PasteClipboardAsync(DataPackageView dataView, bool forceImageOrFile = false) {
+        if (dataView.Contains(StandardDataFormats.StorageItems)) {
+            var items = await dataView.GetStorageItemsAsync();
+            if (items.Count > 8) throw new InvalidOperationException("每批最多粘贴 8 个文件。");
+            foreach (var item in items) {
+                if (item is not StorageFile file) throw new InvalidOperationException("本地文件夹请先压缩；服务器目录可直接 @ 引用。");
+                await work.UploadAsync(file.Path, true);
+            }
+            return;
+        }
+        if (dataView.Contains(StandardDataFormats.Bitmap)) {
+            var streamRef = await dataView.GetBitmapAsync();
+            using var bmpStream = await streamRef.OpenReadAsync();
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(bmpStream);
+            var softBmp = await decoder.GetSoftwareBitmapAsync(
+                Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+            var tempDir = Path.Combine(Path.GetTempPath(), "AGY-PC-Paste");
+            Directory.CreateDirectory(tempDir);
+            var fileName = $"粘贴图片-{DateTime.Now:HHmmss}-{Guid.NewGuid().ToString("N")[..4]}.png";
+            var folder = await StorageFolder.GetFolderFromPathAsync(tempDir);
+            var outFile = await folder.CreateFileAsync(fileName, CreationCollisionOption.ReplaceExisting);
+            using (var outStream = await outFile.OpenAsync(FileAccessMode.ReadWrite)) {
+                var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, outStream);
+                encoder.SetSoftwareBitmap(softBmp);
+                await encoder.FlushAsync();
+            }
+            await work.UploadAsync(outFile.Path, true);
+            return;
+        }
+        if (forceImageOrFile) {
+            throw new InvalidOperationException("剪贴板中当前没有可粘贴的截图或文件。可先截图（Win+Shift+S）或复制图片后再按 Ctrl+V。");
+        }
+    }
+
+    private static TextBlock RenderMarkdownInlines(string raw, List<(string Label, string Link)> localLinks, double fontSize = 14, bool boldBase = false) {
+        var inlined = System.Text.RegularExpressions.Regex.Replace(
+            raw,
+            @"!?\[([^\]\n]{1,1024})\]\(([^\)\n]{1,8192})\)",
+            match => {
+                var label = match.Groups[1].Value;
+                var link = match.Groups[2].Value;
+                localLinks.Add((label, link));
+                return label;
+            },
+            System.Text.RegularExpressions.RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        var tb = new TextBlock {
+            FontSize = fontSize,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            LineHeight = Math.Round(fontSize * 1.62)
+        };
+        if (boldBase) tb.FontWeight = new Windows.UI.Text.FontWeight(600);
+
+        var tokenPattern = new System.Text.RegularExpressions.Regex(@"(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*)", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+        int pos = 0;
+        foreach (System.Text.RegularExpressions.Match m in tokenPattern.Matches(inlined)) {
+            if (m.Index > pos) {
+                tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = Ui.Sanitize(inlined[pos..m.Index]) });
+            }
+            var token = m.Value;
+            if (token.StartsWith('`') && token.EndsWith('`') && token.Length > 2) {
+                tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run {
+                    Text = Ui.Sanitize(token[1..^1]),
+                    FontFamily = new FontFamily("Cascadia Code, Consolas, monospace"),
+                    FontWeight = new Windows.UI.Text.FontWeight(600)
+                });
+            } else if (token.StartsWith("**") && token.EndsWith("**") && token.Length > 4) {
+                tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run {
+                    Text = Ui.Sanitize(token[2..^2]),
+                    FontWeight = new Windows.UI.Text.FontWeight(700)
+                });
+            } else if (token.StartsWith('*') && token.EndsWith('*') && token.Length > 2) {
+                tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run {
+                    Text = Ui.Sanitize(token[1..^1]),
+                    FontStyle = Windows.UI.Text.FontStyle.Italic
+                });
+            } else {
+                tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = Ui.Sanitize(token) });
+            }
+            pos = m.Index + m.Length;
+        }
+        if (pos < inlined.Length) {
+            tb.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = Ui.Sanitize(inlined[pos..]) });
+        }
+        return tb;
+    }
+
+    private static string[]? SplitMarkdownTableRow(string line) {
+        var trimmed = line.Trim();
+        if (!trimmed.Contains('|')) return null;
+        if (trimmed.StartsWith('|')) trimmed = trimmed[1..];
+        if (trimmed.EndsWith('|')) trimmed = trimmed[..^1];
+        return trimmed.Split('|').Select(c => c.Trim()).ToArray();
+    }
+
+    private static TextAlignment[]? ParseMarkdownTableDelimiter(string line) {
+        var cells = SplitMarkdownTableRow(line);
+        if (cells is null || cells.Length == 0) return null;
+        var aligns = new TextAlignment[cells.Length];
+        for (int i = 0; i < cells.Length; i++) {
+            var c = cells[i].Trim();
+            if (c.Length < 3) return null;
+            var core = c.Trim(':');
+            if (core.Length < 3 || core.Any(ch => ch != '-')) return null;
+            bool left = c.StartsWith(':'), right = c.EndsWith(':');
+            aligns[i] = left && right ? TextAlignment.Center : right ? TextAlignment.Right : TextAlignment.Left;
+        }
+        return aligns;
+    }
+
+    private static UIElement RenderMarkdownTable(string[] headers, TextAlignment[] alignments, List<string[]> rows, List<(string Label, string Link)> localLinks) {
+        int cols = Math.Max(headers.Length, alignments.Length);
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+        for (int c = 0; c < cols; c++) {
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (int r = 0; r < rows.Count; r++) {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        for (int c = 0; c < cols; c++) {
+            var hText = c < headers.Length ? headers[c] : "";
+            var align = c < alignments.Length ? alignments[c] : TextAlignment.Left;
+            var tb = RenderMarkdownInlines(hText, localLinks, 12.5, true);
+            tb.TextAlignment = align;
+            var cell = Ui.Surface(tb, "LayerFillColorAltBrush", new Thickness(10, 8, 10, 8), 0);
+            Grid.SetRow(cell, 0);
+            Grid.SetColumn(cell, c);
+            grid.Children.Add(cell);
+        }
+
+        for (int r = 0; r < rows.Count; r++) {
+            var row = rows[r];
+            var brush = r % 2 == 1 ? "LayerFillColorAltBrush" : "CardBackgroundFillColorDefaultBrush";
+            for (int c = 0; c < cols; c++) {
+                var cText = c < row.Length ? row[c] : "";
+                var align = c < alignments.Length ? alignments[c] : TextAlignment.Left;
+                var tb = RenderMarkdownInlines(cText, localLinks, 13);
+                tb.TextAlignment = align;
+                var cell = Ui.Surface(tb, brush, new Thickness(10, 7, 10, 7), 0);
+                Grid.SetRow(cell, r + 1);
+                Grid.SetColumn(cell, c);
+                grid.Children.Add(cell);
+            }
+        }
+        return Ui.Surface(grid, "CardBackgroundFillColorDefaultBrush", new Thickness(0), 8);
     }
 
     private UIElement MessageText(string value, List<(string Label, string Link)>? collectedLinks = null) {
@@ -1750,56 +2096,203 @@ internal sealed class MainWindow : Window {
         var clean = FileRules.CleanText(value);
         if (clean.Length == 0) return panel;
         var localLinks = collectedLinks ?? [];
-        var pieces = clean.Split("```");
-        for (var i = 0; i < pieces.Length; i++) {
-            var text = pieces[i];
-            if (i % 2 == 0) {
-                var inlined = System.Text.RegularExpressions.Regex.Replace(
-                    text,
-                    @"!?\[([^\]\n]{1,1024})\]\(([^\)\n]{1,8192})\)",
-                    match => {
-                        var label = match.Groups[1].Value;
-                        var link = match.Groups[2].Value;
-                        localLinks.Add((label, link));
-                        return label;
-                    },
-                    System.Text.RegularExpressions.RegexOptions.None,
-                    TimeSpan.FromSeconds(1)).Trim('\r', '\n');
-                if (inlined.Length > 0) {
-                    panel.Children.Add(Ui.Prose(inlined));
+        var normalized = clean.Replace("\r\n", "\n").Replace('\r', '\n');
+        var lines = normalized.Split('\n');
+        int i = 0;
+
+        while (i < lines.Length) {
+            var line = lines[i];
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) { i++; continue; }
+
+            // 1. Fenced code block (``` or ````)
+            if (trimmed.StartsWith("```")) {
+                var fence = trimmed.StartsWith("````") ? "````" : "```";
+                var lang = trimmed[fence.Length..].Trim();
+                if (lang.Length == 0) lang = "CODE";
+                var codeLines = new List<string>();
+                i++;
+                while (i < lines.Length) {
+                    var candidate = lines[i].Trim();
+                    if (candidate.StartsWith(fence) && candidate[fence.Length..].Trim().Length == 0) {
+                        i++;
+                        break;
+                    }
+                    codeLines.Add(lines[i]);
+                    i++;
                 }
+                var code = string.Join("\n", codeLines);
+                var box = new TextBox {
+                    Text = code,
+                    IsReadOnly = true,
+                    AcceptsReturn = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    FontFamily = new FontFamily("Cascadia Code, Consolas, monospace"),
+                    FontSize = 12.5,
+                    MaxHeight = 420,
+                    CornerRadius = new CornerRadius(8)
+                };
+                ScrollViewer.SetHorizontalScrollBarVisibility(box, ScrollBarVisibility.Auto);
+                var wrap = new CheckBox { Content = "自动换行", FontSize = 12, MinWidth = 0, IsChecked = true };
+                wrap.Checked += (_, _) => box.TextWrapping = TextWrapping.Wrap;
+                wrap.Unchecked += (_, _) => box.TextWrapping = TextWrapping.NoWrap;
+
+                var codeTop = new Grid { ColumnSpacing = 8 };
+                codeTop.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+                codeTop.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+                codeTop.Children.Add(Ui.SectionLabel(lang.ToUpperInvariant()));
+                var codeTools = Ui.Inline(wrap, Ui.ToolbarButton("复制代码", Symbol.Copy, "复制此代码块", () => Copy(code)));
+                Grid.SetColumn(codeTools, 1);
+                codeTop.Children.Add(codeTools);
+
+                var codeCard = Ui.Surface(Ui.Stack(codeTop, box), "LayerFillColorDefaultBrush", new Thickness(12, 10, 12, 12), 10);
+                panel.Children.Add(codeCard);
                 continue;
             }
-            var newline = text.IndexOf('\n');
-            var lang = newline >= 0 && text[..newline].Trim().Length > 0 ? text[..newline].Trim() : "CODE";
-            var code = newline >= 0 ? text[(newline + 1)..].TrimEnd('\r', '\n') : text;
-            var box = new TextBox {
-                Text = code,
-                IsReadOnly = true,
-                AcceptsReturn = true,
-                TextWrapping = TextWrapping.Wrap,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                FontFamily = new FontFamily("Cascadia Code, Consolas, monospace"),
-                FontSize = 12.5,
-                MaxHeight = 420,
-                CornerRadius = new CornerRadius(8)
-            };
-            ScrollViewer.SetHorizontalScrollBarVisibility(box, ScrollBarVisibility.Auto);
-            var wrap = new CheckBox { Content = "自动换行", FontSize = 12, MinWidth = 0, IsChecked = true };
-            wrap.Checked += (_, _) => box.TextWrapping = TextWrapping.Wrap;
-            wrap.Unchecked += (_, _) => box.TextWrapping = TextWrapping.NoWrap;
 
-            var codeTop = new Grid { ColumnSpacing = 8 };
-            codeTop.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-            codeTop.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            codeTop.Children.Add(Ui.SectionLabel(lang.ToUpperInvariant()));
-            var codeTools = Ui.Inline(wrap, Ui.ToolbarButton("复制代码", Symbol.Copy, "复制此代码块", () => Copy(code)));
-            Grid.SetColumn(codeTools, 1);
-            codeTop.Children.Add(codeTools);
+            // 2. GFM Table
+            if (i + 1 < lines.Length && line.Contains('|') && ParseMarkdownTableDelimiter(lines[i + 1]) is { } alignments) {
+                var headers = SplitMarkdownTableRow(line);
+                if (headers is { Length: > 0 }) {
+                    i += 2;
+                    var rows = new List<string[]>();
+                    while (i < lines.Length) {
+                        var rLine = lines[i];
+                        var rTrim = rLine.Trim();
+                        if (rTrim.Length == 0 || !rLine.Contains('|') || rTrim.StartsWith("```") || rTrim.StartsWith('#')) break;
+                        if (SplitMarkdownTableRow(rLine) is { } cells) rows.Add(cells);
+                        i++;
+                    }
+                    panel.Children.Add(RenderMarkdownTable(headers, alignments, rows, localLinks));
+                    continue;
+                }
+            }
 
-            var codeCard = Ui.Surface(Ui.Stack(codeTop, box), "LayerFillColorDefaultBrush", new Thickness(12, 10, 12, 12), 10);
-            panel.Children.Add(codeCard);
+            // 3. Horizontal rule (---, ***, ___)
+            if (trimmed.Length >= 3 && (trimmed.All(c => c == '-' || c == ' ') && trimmed.Count(c => c == '-') >= 3
+                || trimmed.All(c => c == '*' || c == ' ') && trimmed.Count(c => c == '*') >= 3
+                || trimmed.All(c => c == '_' || c == ' ') && trimmed.Count(c => c == '_') >= 3)) {
+                panel.Children.Add(Ui.Divider());
+                i++;
+                continue;
+            }
+
+            // 4. ATX Heading (# ... ######)
+            if (trimmed.StartsWith('#')) {
+                int level = 0;
+                while (level < trimmed.Length && level < 6 && trimmed[level] == '#') level++;
+                if (level < trimmed.Length && trimmed[level] == ' ') {
+                    var hText = trimmed[(level + 1)..].Trim();
+                    double hSize = level switch { 1 => 20, 2 => 17.5, 3 => 15.5, _ => 14.5 };
+                    var headingTb = RenderMarkdownInlines(hText, localLinks, hSize, true);
+                    if (level <= 2) {
+                        var hStack = Ui.Stack(headingTb, Ui.Divider());
+                        hStack.Spacing = 6;
+                        panel.Children.Add(hStack);
+                    } else {
+                        panel.Children.Add(headingTb);
+                    }
+                    i++;
+                    continue;
+                }
+            }
+
+            // 5. Blockquote / GitHub Alert (> ...)
+            if (trimmed.StartsWith('>')) {
+                var quoteLines = new List<string>();
+                while (i < lines.Length && lines[i].Trim().StartsWith('>')) {
+                    var q = lines[i].Trim()[1..];
+                    if (q.StartsWith(' ')) q = q[1..];
+                    quoteLines.Add(q);
+                    i++;
+                }
+                string? alertBadge = null;
+                if (quoteLines.Count > 0) {
+                    var first = quoteLines[0].Trim();
+                    foreach (var (tag, label) in new[] { ("NOTE", "ℹ️ 说明"), ("TIP", "💡 提示"), ("IMPORTANT", "📌 重要"), ("WARNING", "⚠️ 注意"), ("CAUTION", "🚨 警告") }) {
+                        var prefix = $"[!{tag}]";
+                        if (first.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) {
+                            alertBadge = label;
+                            var rest = first[prefix.Length..].Trim();
+                            if (rest.Length == 0) quoteLines.RemoveAt(0);
+                            else quoteLines[0] = rest;
+                            break;
+                        }
+                    }
+                }
+                var quoteStack = Ui.Stack();
+                quoteStack.Spacing = 4;
+                if (alertBadge is not null) quoteStack.Children.Add(Ui.SectionLabel(alertBadge));
+                var quoteBody = string.Join("\n", quoteLines).Trim();
+                if (quoteBody.Length > 0) quoteStack.Children.Add(RenderMarkdownInlines(quoteBody, localLinks, 13.5));
+                panel.Children.Add(Ui.Surface(quoteStack, "LayerFillColorAltBrush", new Thickness(14, 10, 14, 10), 8));
+                continue;
+            }
+
+            // 6. Lists (-, *, +, 1., - [x], - [ ])
+            var listMatch = System.Text.RegularExpressions.Regex.Match(line, @"^(\s*)([-*+]|\d+\.)\s+(.*)$");
+            if (listMatch.Success) {
+                var listStack = Ui.Stack();
+                listStack.Spacing = 6;
+                while (i < lines.Length) {
+                    var cur = lines[i];
+                    if (string.IsNullOrWhiteSpace(cur)) {
+                        if (i + 1 < lines.Length && System.Text.RegularExpressions.Regex.IsMatch(lines[i + 1], @"^(\s*)([-*+]|\d+\.)\s+")) {
+                            i++;
+                            continue;
+                        }
+                        break;
+                    }
+                    var m = System.Text.RegularExpressions.Regex.Match(cur, @"^(\s*)([-*+]|\d+\.)\s+(.*)$");
+                    if (!m.Success) break;
+                    int indent = m.Groups[1].Value.Replace("\t", "  ").Length / 2;
+                    var marker = m.Groups[2].Value;
+                    var itemText = m.Groups[3].Value;
+                    string bullet = marker.EndsWith('.') ? marker : "•";
+                    if (itemText.StartsWith("[x] ", StringComparison.OrdinalIgnoreCase)) {
+                        bullet = "☑";
+                        itemText = itemText[4..];
+                    } else if (itemText.StartsWith("[ ] ")) {
+                        bullet = "☐";
+                        itemText = itemText[4..];
+                    }
+                    var rowGrid = new Grid { ColumnSpacing = 8, Margin = new Thickness(indent * 18, 0, 0, 0) };
+                    rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    var bulletTb = Ui.Text(bullet, 13.5);
+                    bulletTb.FontWeight = new Windows.UI.Text.FontWeight(600);
+                    bulletTb.Opacity = 0.78;
+                    var contentTb = RenderMarkdownInlines(itemText, localLinks, 14);
+                    Grid.SetColumn(contentTb, 1);
+                    rowGrid.Children.Add(bulletTb);
+                    rowGrid.Children.Add(contentTb);
+                    listStack.Children.Add(rowGrid);
+                    i++;
+                }
+                panel.Children.Add(listStack);
+                continue;
+            }
+
+            // 7. Standard paragraph
+            var paraLines = new List<string>();
+            while (i < lines.Length) {
+                var pLine = lines[i];
+                var pTrim = pLine.Trim();
+                if (pTrim.Length == 0 || pTrim.StartsWith("```") || pTrim.StartsWith('#') || pTrim.StartsWith('>')
+                    || System.Text.RegularExpressions.Regex.IsMatch(pLine, @"^(\s*)([-*+]|\d+\.)\s+")
+                    || (i + 1 < lines.Length && pLine.Contains('|') && ParseMarkdownTableDelimiter(lines[i + 1]) is not null)) {
+                    break;
+                }
+                paraLines.Add(pLine);
+                i++;
+            }
+            var paraText = string.Join("\n", paraLines).Trim();
+            if (paraText.Length > 0) {
+                panel.Children.Add(RenderMarkdownInlines(paraText, localLinks, 14));
+            }
         }
+
         if (collectedLinks is null && localLinks.Count > 0 && BuildGroupedArtifacts(localLinks, []) is { } standaloneArtifacts) {
             panel.Children.Add(standaloneArtifacts);
         }

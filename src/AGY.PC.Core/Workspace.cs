@@ -4,6 +4,10 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     private AppState state = store.Load();
     private GatewayClient? client;
     private CancellationTokenSource? watch;
+    private CancellationTokenSource? hybridWatch;
+    private readonly string deviceId = Guid.NewGuid().ToString("D");
+    private readonly HashSet<string> hybridSessions = [];
+    private string[] detectedTools = [];
     private int generation;
     private bool draining;
     private string scope = "";
@@ -31,8 +35,22 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public string? Notice { get; private set; }
     public string Presentation => profile.Presentation;
     public string Theme => profile.Theme;
+    public bool AiBuildsEnabled => profile.AiBuildsEnabled;
+    public string HybridStatus { get; private set; } = "连接后自动就绪（Windows PC）";
+    public string[] HybridTools => detectedTools;
+    public bool HybridExecuting { get; private set; }
+    public string[] HybridOutputs { get; private set; } = [];
+    public string? HybridLastLog { get; private set; }
+    public event Action<string>? HybridLogLine;
     public BuildPlan? Build => profile.Build;
     public void RememberBuild(BuildPlan plan) { profile.Build=plan;Save(); }
+    public void SetAiBuildsEnabled(bool enabled) {
+        profile.AiBuildsEnabled = enabled;
+        Save();
+        if (!enabled) StopHybridWorker();
+        else EnsureHybridWorker(Selected?.Id);
+        Publish();
+    }
     public void SetTheme(string theme) { if(theme is not ("Default" or "Light" or "Dark"))return;profile.Theme=theme;Save(); }
     public void SetPresentation(string value) { if (value is not ("原版" or "步骤摘要" or "结论优先")) return; profile.Presentation=value; Save(); }
     public void SaveCustomSkill(string name, string description, string triggerText, string? filePath = null) {
@@ -123,7 +141,9 @@ public sealed class Workspace(IStateStore store) : IDisposable {
             state.Connection = credentials; Save();
             await ReloadAsync();
             if (profile.Pending is { } pending) await SelectAsync(pending.SessionID);
-            ConnectionLabel = "已连接"; Publish();
+            ConnectionLabel = "已连接";
+            EnsureHybridWorker(Selected?.Id);
+            Publish();
         } catch { if (client == candidate) { client = null; Status = null; } candidate.Dispose(); throw; }
     }
     private async Task VerifyProfileAsync() {
@@ -177,7 +197,9 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         Selected = selected;
         Settings = SettingsFrom(selected);
         ConnectionLabel = selected.Approvals?.Length > 0 ? "等待审批" : selected.Running ? "AGY 正在工作" : "已就绪";
-        Reconcile(selected); Publish();
+        Reconcile(selected);
+        EnsureHybridWorker(selected.Id);
+        Publish();
         if (selected.Running || (profile.Queues.TryGetValue(selected.Id, out var q) && q.Count > 0))
             StartWatch();
     }
@@ -412,6 +434,7 @@ public sealed class Workspace(IStateStore store) : IDisposable {
             new { text = pending.Text, requestID = pending.RequestID, attachments = pending.Attachments, references = pending.References.Select(r => r.Path).ToArray() });
         UpsertSession(snapshot);
         Reconcile(snapshot);
+        EnsureHybridWorker(snapshot.Id);
         if (Selected?.Id == snapshot.Id) { Selected = snapshot; StartWatch(); }
         Publish();
         if (factory is not null) await ReloadAsync();
@@ -458,6 +481,11 @@ public sealed class Workspace(IStateStore store) : IDisposable {
                         return;
                     }
                     await ReloadAsync();
+                    if (Selected?.Id == sid && Sessions.FirstOrDefault(s => s.Id == sid) is { } updatedMeta && updatedMeta.Name != Selected.Name) {
+                        Selected = Selected with { Name = updatedMeta.Name };
+                        sessionCache[sid] = Selected;
+                        Publish();
+                    }
                     return;
                 }
             } catch (Exception error) {
@@ -491,8 +519,24 @@ public sealed class Workspace(IStateStore store) : IDisposable {
     public async Task<Attachment> UploadAsync(string local, bool reference) {
         await VerifyProfileAsync(); var sid = await EnsureSessionAsync();
         var attachment = await Api.UploadAsync(sid,local);
+        if (attachment.Path is { Length: > 0 } remotePath) TrySeedImageCache(sid, remotePath, local);
         if (reference && attachment.Path is { } path && Selected?.Id == sid) AddReference(new(path,"上传/"+attachment.Name,false));
         return attachment;
+    }
+    private void TrySeedImageCache(string sid, string remotePath, string localSource) {
+        try {
+            if (!File.Exists(localSource)) return;
+            var ext = Path.GetExtension(remotePath).ToLowerInvariant();
+            if (ext is not (".jpg" or ".jpeg" or ".png" or ".webp" or ".gif" or ".bmp")) return;
+            var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AGY-PC", "ImageCache");
+            Directory.CreateDirectory(cacheDir);
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sid + "|" + remotePath)))[..24].ToLowerInvariant();
+            var localPath = Path.Combine(cacheDir, hash + ext);
+            File.Copy(localSource, localPath, true);
+            lock (imageDownloads) {
+                imageDownloads[sid + "|" + remotePath] = Task.FromResult<string?>(localPath);
+            }
+        } catch { }
     }
     public async Task DownloadAsync(string remote, string destination) {
         await VerifyProfileAsync();
@@ -532,8 +576,9 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         if(Selected?.Running==true)throw new InvalidOperationException("请等待当前服务器任务结束后同步项目。");
         if(Status?.Capabilities.ProjectSnapshots!=true)throw new InvalidOperationException("服务器尚未启用项目同步，请更新配套网关。");
         await VerifyProfileAsync();var sid=await EnsureSessionAsync();
+        var remotePath=Selected?.Cwd is { Length: > 0 } cwd ? cwd : "";
         var temporary=Path.Combine(Path.GetTempPath(),"agy-project-"+Guid.NewGuid()+".zip");
-        try{await Api.DownloadAsync(sid,Settings.Workspace,temporary,snapshot:true);HybridBuild.ExtractSnapshot(temporary,destination);}
+        try{await Api.DownloadAsync(sid,remotePath,temporary,snapshot:true);HybridBuild.ExtractSnapshot(temporary,destination);}
         finally{if(File.Exists(temporary))File.Delete(temporary);}
     }
     public Task<LimitReply> LimitsAsync(bool forceRefresh = true) => Api.JsonAsync<LimitReply>("limits",query:forceRefresh ? new() { ["refresh"] = "1" } : null);
@@ -553,6 +598,181 @@ public sealed class Workspace(IStateStore store) : IDisposable {
         sessionCache.Remove(session.Id);
         profile.Drafts.Remove(session.Id); profile.Queues.Remove(session.Id); Save(); if (Selected?.Id == session.Id) NewConversation(); await ReloadAsync();
     }
-    public void Disconnect() { watch?.Cancel(); client?.Dispose(); client = null; Status = null; Selected = null; sessionCache.Clear(); ++generation; state.Connection = null; Save(); scope = ""; profile = new(); Publish(); }
-    public void Dispose() { watch?.Cancel(); watch?.Dispose(); client?.Dispose(); }
+    private void StopHybridWorker() {
+        hybridWatch?.Cancel();
+        hybridWatch?.Dispose();
+        hybridWatch = null;
+        hybridSessions.Clear();
+        HybridExecuting = false;
+        HybridStatus = profile.AiBuildsEnabled ? "未连接服务器" : "AI 自动本机构建已关闭";
+    }
+    public void EnsureHybridWorker(string? sid = null) {
+        if (factory is not null || !OperatingSystem.IsWindows()) return;
+        if (!Connected || !profile.AiBuildsEnabled || Status is null || client is null) {
+            StopHybridWorker();
+            return;
+        }
+        lock (hybridSessions) {
+            if (!string.IsNullOrWhiteSpace(sid)) hybridSessions.Add(sid);
+            foreach (var s in Sessions.Take(5)) hybridSessions.Add(s.Id);
+        }
+        if (hybridWatch is not null && !hybridWatch.IsCancellationRequested) return;
+        hybridWatch = new CancellationTokenSource();
+        var ct = hybridWatch.Token;
+        var api = client;
+        var expectedProfile = Status.AccountProfile;
+        _ = Task.Run(() => RunHybridLoopAsync(api, expectedProfile, ct), ct);
+    }
+    private async Task RunHybridLoopAsync(GatewayClient api, string expectedProfile, CancellationToken ct) {
+        try {
+            if (detectedTools.Length == 0) {
+                HybridStatus = "正在探测 Windows 编译环境…";
+                Publish();
+                detectedTools = HybridBuild.DetectTools();
+            }
+            var arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "arm64" : "x86_64";
+            while (!ct.IsCancellationRequested) {
+                try {
+                    string[] targetSids;
+                    lock (hybridSessions) targetSids = [..hybridSessions];
+                    foreach (var sid in targetSids) {
+                        try {
+                            var ack = await api.JsonAsync<DeviceAck>($"sessions/{GatewayClient.Id(sid)}/device", HttpMethod.Post,
+                                new { deviceID = deviceId, platform = "windows", architecture = arch, tools = detectedTools }, ct: ct);
+                            if (ack.AccountProfile != expectedProfile) { StopHybridWorker(); Publish(); return; }
+                        } catch {
+                            lock (hybridSessions) hybridSessions.Remove(sid);
+                        }
+                    }
+                    var pollBody = new { deviceID = deviceId, platform = "windows", architecture = arch, tools = detectedTools };
+                    var dispatch = await api.JsonAsync<BuildDispatch>($"devices/{deviceId}/poll", HttpMethod.Post, pollBody, ct: ct);
+                    if (dispatch.AccountProfile != expectedProfile) { StopHybridWorker(); Publish(); return; }
+                    if (dispatch.Job is { } job && !string.IsNullOrEmpty(dispatch.Lease)) {
+                        await ExecuteHybridJobAsync(api, job, dispatch.Lease, expectedProfile, ct);
+                    } else {
+                        HybridStatus = $"AI 自动构建已就绪 · Windows ({arch})";
+                        Publish();
+                    }
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    return;
+                } catch (Exception ex) {
+                    HybridStatus = "AI 构建轮询等待重连：" + ex.Message;
+                    Publish();
+                }
+                await Task.Delay(1500, ct);
+            }
+        } catch (OperationCanceledException) { }
+    }
+    private async Task ExecuteHybridJobAsync(GatewayClient api, BuildJob job, string lease, string expectedProfile, CancellationToken ct) {
+        HybridExecuting = true;
+        HybridStatus = "AI 正在同步项目到 Windows 本机副本…";
+        Publish();
+        using var pulseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var leaseLost = false;
+        var pulseTask = Task.Run(async () => {
+            while (!pulseCts.Token.IsCancellationRequested) {
+                try {
+                    var ack = await api.JsonAsync<DeviceAck>($"builds/{GatewayClient.Id(job.Id)}", HttpMethod.Post, new { lease }, ct: pulseCts.Token);
+                    if (ack.AccountProfile != expectedProfile) { leaseLost = true; pulseCts.Cancel(); return; }
+                } catch {
+                    leaseLost = true;
+                    pulseCts.Cancel();
+                    return;
+                }
+                try { await Task.Delay(2000, pulseCts.Token); } catch (OperationCanceledException) { return; }
+            }
+        }, pulseCts.Token);
+
+        try {
+            var tempZip = Path.Combine(Path.GetTempPath(), $"agy-ai-snap-{job.Id}.zip");
+            var workDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AGY-PC", "Workspaces", "AI-" + job.Id);
+            try {
+                await api.DownloadAsync(job.SessionID, job.Subdirectory, tempZip, pulseCts.Token, snapshot: true, buildId: job.Id, lease: lease);
+                if (Directory.Exists(workDir)) Directory.Delete(workDir, true);
+                HybridBuild.ExtractSnapshot(tempZip, workDir);
+            } finally {
+                if (File.Exists(tempZip)) File.Delete(tempZip);
+            }
+            HybridStatus = "AI 正在 Windows 本机执行构建…";
+            HybridLogLine?.Invoke($"[AI 自动触发构建] 目录：{workDir}\n命令：{job.Command}\n");
+            Publish();
+
+            var buildResult = await HybridBuild.RunAsync(new BuildPlan(BuildTarget.Windows, workDir, job.Command), line => {
+                HybridLogLine?.Invoke(line);
+            }, pulseCts.Token);
+
+            HybridLastLog = buildResult.Log;
+            HybridStatus = "正在整理本机产物并回传构建结果…";
+            Publish();
+
+            var downloadsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "AGY-Builds");
+            Directory.CreateDirectory(downloadsDir);
+            var attachments = new List<string>();
+            var savedLocal = new List<string>();
+            var artifactErrors = new List<string>();
+
+            var logFile = Path.Combine(Path.GetTempPath(), $"build-{job.Id}.log");
+            try {
+                await File.WriteAllTextAsync(logFile, buildResult.Log, pulseCts.Token);
+                var uploadedLog = await api.UploadAsync(job.SessionID, logFile, pulseCts.Token);
+                attachments.Add(uploadedLog.Id);
+            } catch { } finally { if (File.Exists(logFile)) File.Delete(logFile); }
+
+            foreach (var rel in job.Artifacts ?? []) {
+                try {
+                    var fullPath = HybridBuild.ConfinedPath(rel, workDir);
+                    if (Directory.Exists(fullPath)) {
+                        var zipName = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar)) + ".zip";
+                        var destZip = Path.Combine(downloadsDir, zipName);
+                        if (File.Exists(destZip)) File.Delete(destZip);
+                        System.IO.Compression.ZipFile.CreateFromDirectory(fullPath, destZip);
+                        savedLocal.Add(destZip);
+                        var att = await api.UploadAsync(job.SessionID, destZip, pulseCts.Token);
+                        attachments.Add(att.Id);
+                    } else if (File.Exists(fullPath)) {
+                        var destFile = Path.Combine(downloadsDir, Path.GetFileName(fullPath));
+                        File.Copy(fullPath, destFile, true);
+                        savedLocal.Add(destFile);
+                        var att = await api.UploadAsync(job.SessionID, destFile, pulseCts.Token);
+                        attachments.Add(att.Id);
+                    } else {
+                        artifactErrors.Add($"{rel}: 未找到产物文件");
+                    }
+                } catch (Exception ex) {
+                    artifactErrors.Add($"{rel}: {ex.Message}");
+                }
+            }
+
+            if (savedLocal.Count > 0) HybridOutputs = [..savedLocal];
+            var tailLog = buildResult.Log.Length > 12000 ? buildResult.Log[^12000..] : buildResult.Log;
+            var resultPayload = new {
+                exitCode = buildResult.ExitCode,
+                log = tailLog,
+                attachments = attachments.ToArray(),
+                artifactPaths = savedLocal.ToArray(),
+                artifactErrors = artifactErrors.ToArray()
+            };
+            await api.JsonAsync<DeviceAck>($"builds/{GatewayClient.Id(job.Id)}", HttpMethod.Post, new { lease, complete = true, result = resultPayload }, ct: ct);
+            HybridStatus = savedLocal.Count > 0
+                ? $"AI 本机构建完成（退出码 {buildResult.ExitCode}）· 产物已存至 Downloads\\AGY-Builds"
+                : $"AI 本机构建完成（退出码 {buildResult.ExitCode}）";
+            Publish();
+        } catch (Exception ex) {
+            if (!leaseLost && !ct.IsCancellationRequested) {
+                try {
+                    await api.JsonAsync<DeviceAck>($"builds/{GatewayClient.Id(job.Id)}", HttpMethod.Post,
+                        new { lease, complete = true, result = new { error = ex.Message, exitCode = -1, attachments = Array.Empty<string>() } }, ct: ct);
+                } catch { }
+            }
+            HybridStatus = "AI 本机构建中断：" + ex.Message;
+            Publish();
+        } finally {
+            pulseCts.Cancel();
+            try { await pulseTask; } catch { }
+            HybridExecuting = false;
+            Publish();
+        }
+    }
+    public void Disconnect() { StopHybridWorker(); watch?.Cancel(); client?.Dispose(); client = null; Status = null; Selected = null; sessionCache.Clear(); ++generation; state.Connection = null; Save(); scope = ""; profile = new(); Publish(); }
+    public void Dispose() { StopHybridWorker(); watch?.Cancel(); watch?.Dispose(); client?.Dispose(); }
 }
